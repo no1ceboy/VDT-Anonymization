@@ -37,6 +37,20 @@ DEFAULT_MODEL = "NlpHUST/ner-vietnamese-electra-base"
 DEFAULT_INPUT = "datasets/legal_test.jsonl"
 DEFAULT_OUTPUT = "outputs/nlphust_legal_test.jsonl"
 
+# Checkpoint label names are not universal. NlpHUST uses PERSON/LOCATION,
+# while many NER interfaces and our CLI use PER/LOC. Canonicalize both forms
+# before applying --entity-types so valid predictions are not filtered out.
+ENTITY_TYPE_ALIASES = {
+    "PER": "PER",
+    "PERSON": "PER",
+    "LOC": "LOC",
+    "LOCATION": "LOC",
+    "ORG": "ORG",
+    "ORGANIZATION": "ORG",
+    "MISC": "MISC",
+    "MISCELLANEOUS": "MISC",
+}
+
 
 def load_jsonl_rows(path, offset=0, limit=0):
     """Yield rows without loading the 800 MB legal file into memory."""
@@ -67,7 +81,11 @@ def choose_device(requested):
 def parse_entity_types(value):
     if value.strip().lower() in {"all", "*"}:
         return None
-    values = {part.strip().upper() for part in value.split(",") if part.strip()}
+    values = {
+        ENTITY_TYPE_ALIASES.get(part.strip().upper(), part.strip().upper())
+        for part in value.split(",")
+        if part.strip()
+    }
     if not values:
         raise ValueError("--entity-types must contain at least one type or 'all'")
     return values
@@ -82,8 +100,9 @@ def split_label(raw_label):
         prefix, entity_type = label.split("-", 1)
         prefix = prefix.upper()
         if prefix in {"B", "I", "E", "S", "U"}:
-            return prefix, entity_type.upper()
-    return "I", label.upper()
+            normalized_type = ENTITY_TYPE_ALIASES.get(entity_type.upper(), entity_type.upper())
+            return prefix, normalized_type
+    return "I", ENTITY_TYPE_ALIASES.get(label.upper(), label.upper())
 
 
 def model_label_map(model):

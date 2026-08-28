@@ -1,0 +1,30 @@
+# Local and generated data
+datasets/
+outputs/
+*.jsonl
+*.json
+
+# Notebook outputs and local experiments
+notebooks/
+.ipynb_checkpoints/
+
+# Python cache and environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Local model/checkpoint files
+checkpoints/
+models/
+*.bin
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+
+# Logs and OS/editor files
+*.log
+.DS_Store
+Thumbs.db
