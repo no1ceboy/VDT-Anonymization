@@ -57,6 +57,8 @@ TITLE_RE = re.compile(
     r"^(?:ông|bà|anh|chị|em|cô|chú|bác|ông/bà|bà/ông)\s+",
     re.IGNORECASE,
 )
+FEMALE_GENDER_CUE_RE = re.compile(r"\b(?:bà|chị|cô|mẹ|vợ|nữ|thị)\b", re.IGNORECASE)
+MALE_GENDER_CUE_RE = re.compile(r"\b(?:ông|anh|chú|cha|chồng|nam|văn)\b", re.IGNORECASE)
 LOCATION_PREFIX_RE = re.compile(
     r"^(?:xã|phường|thị\s+trấn|huyện|quận|thị\s+xã|thành\s+phố|tỉnh|"
     r"ấp|thôn|khu\s+phố|đường|ngõ|hẻm)\s+",
@@ -70,48 +72,76 @@ ENTITY_ALIASES = {
     "LOCATION": "LOC",
 }
 
-# These are given-name pools, not recovered identities. They provide natural
-# Vietnamese-looking output while preserving the anonymized initial.
+# These are given-name pools, not recovered identities. They contain only
+# common, single-token Vietnamese given names. We preserve the anonymized
+# initial when a suitable common name exists, but do not force an uncommon or
+# invented name just to match an arbitrary publication marker.
 GIVEN_NAMES = {
     "male": {
-        "A": ["Anh", "An", "Anh Tuấn"],
-        "B": ["Bình", "Bảo", "Bách"],
+        "A": ["An", "Anh"],
+        "B": ["Bảo", "Bình"],
         "C": ["Cường", "Chính", "Công"],
-        "D": ["Dũng", "Đức", "Danh"],
-        "Đ": ["Đạt", "Đức", "Đông"],
-        "H": ["Hải", "Hùng", "Hoàng"],
-        "K": ["Khánh", "Khoa", "Kiên"],
-        "L": ["Long", "Linh", "Lợi"],
-        "M": ["Minh", "Mạnh", "Mẫn"],
-        "N": ["Nam", "Nghĩa", "Nhân"],
-        "P": ["Phúc", "Phong", "Phát"],
+        "D": ["Dũng", "Duy", "Dương"],
+        "Đ": ["Đạt", "Đức", "Đăng"],
+        "G": ["Gia", "Giang"],
+        "H": ["Hải", "Hùng", "Hoàng", "Hưng", "Hiếu", "Huy"],
+        "K": ["Khoa", "Kiên", "Khôi", "Khánh", "Khang"],
+        "L": ["Long", "Lâm", "Lộc"],
+        "M": ["Minh", "Mạnh"],
+        "N": ["Nam", "Nghĩa", "Nhân", "Nguyên", "Ngọc"],
+        "P": ["Phúc", "Phong", "Phát", "Phước"],
         "Q": ["Quang", "Quốc", "Quân"],
         "S": ["Sơn", "Sang", "Sinh"],
-        "T": ["Tuấn", "Thanh", "Tùng"],
-        "V": ["Văn", "Việt", "Vinh"],
-        "Y": ["Yên", "Yênh", "Yêu"],
+        "T": ["Tuấn", "Tùng", "Trung", "Thành", "Thắng", "Tiến", "Tâm", "Thịnh", "Trí"],
+        "V": ["Việt", "Vinh", "Vũ", "Vương"],
+        "X": ["Xuân"],
     },
     "female": {
-        "A": ["Anh", "An", "Ánh"],
-        "B": ["Bình", "Bích", "Bảo"],
+        "A": ["Ánh", "An", "Anh"],
+        "B": ["Bích", "Bình", "Bảo"],
         "C": ["Chi", "Châu", "Cúc"],
-        "D": ["Diễm", "Dung", "Duyên"],
-        "Đ": ["Đan", "Đào", "Điệp"],
-        "H": ["Hạnh", "Hoa", "Hương"],
-        "K": ["Kim", "Khanh", "Kiều"],
-        "L": ["Lan", "Linh", "Lệ"],
-        "M": ["Mai", "My", "Minh"],
-        "N": ["Ngân", "Nga", "Nhung"],
-        "P": ["Phương", "Phượng", "Phúc"],
-        "Q": ["Quỳnh", "Quyên", "Quế"],
-        "S": ["Sen", "Sương", "Sim"],
-        "T": ["Trang", "Thảo", "Trinh"],
-        "V": ["Vy", "Vân", "Vi"],
-        "Y": ["Yến", "Ý", "Yên"],
+        "D": ["Diễm", "Dung", "Duyên", "Diệp"],
+        "Đ": ["Đan", "Đào"],
+        "G": ["Giang", "Giao"],
+        "H": ["Hạnh", "Hoa", "Hương", "Hiền", "Hồng", "Hà", "Hằng", "Huyền", "Hoài"],
+        "K": ["Kim", "Kiều", "Khánh"],
+        "L": ["Lan", "Linh", "Loan", "Liên"],
+        "M": ["Mai", "My", "Mỹ"],
+        "N": ["Ngân", "Nga", "Ngọc", "Nhung", "Nhi", "Như", "Nguyên"],
+        "P": ["Phương", "Phượng"],
+        "Q": ["Quỳnh", "Quyên"],
+        "S": ["Sen", "Sương"],
+        "T": ["Trang", "Thảo", "Trinh", "Thúy", "Thanh", "Tâm", "Tiên", "Tuyết", "Tú"],
+        "V": ["Vân", "Vy", "Vi"],
+        "X": ["Xuân"],
+        "Y": ["Yến"],
+        "U": ["Uyên"],
+        "O": ["Oanh"],
     },
 }
 
 FAMILY_NAMES = ["Nguyễn", "Trần", "Lê", "Phạm", "Hoàng", "Huỳnh", "Võ", "Vũ", "Đặng", "Bùi"]
+
+FALLBACK_GIVEN_NAMES = {
+    "male": ["Anh", "Bình", "Dũng", "Hải", "Hùng", "Khoa", "Long", "Minh", "Nam", "Phúc", "Quang", "Sơn", "Tuấn", "Vinh"],
+    "female": ["Anh", "Bình", "Dung", "Hạnh", "Hoa", "Hương", "Lan", "Linh", "Mai", "Nga", "Ngọc", "Phương", "Trang", "Thảo", "Vy"],
+}
+
+# Only these tokens may be used to expand a one-letter marker into a full
+# name. This prevents words such as ``Bên``, ``Cháu`` or all-caps headings from
+# becoming fake name prefixes when the marker regex scans the whole document.
+NAME_PREFIX_TOKENS = {
+    "nguyễn", "trần", "lê", "phạm", "hoàng", "huỳnh", "võ", "vũ", "đặng", "bùi",
+    "phan", "đoàn", "đinh", "dương", "hồ", "ngô", "đỗ", "tô", "tạ", "cao", "mai",
+    "lý", "lưu", "trương", "mạc", "mã", "hứa", "giàng", "chung", "chu", "hà", "hạ",
+    "lâm", "tống", "tôn", "kiều", "khổng", "thân", "bạch", "vi", "thái", "quách",
+    "triệu", "tăng", "từ", "nông", "sầm", "thạch", "vương", "lương", "uông", "nghiêm",
+    "lại", "chế", "văn", "thị", "đức", "hữu", "quốc", "ngọc", "minh", "thanh", "đình",
+    "công", "thế", "xuân", "kim", "thúy", "nhật", "quang", "tấn", "thành", "anh", "bảo",
+    "gia", "khắc", "trọng", "phước", "phú", "cẩm", "hải", "mạnh", "đình", "văn",
+    "trúc", "bích", "bạch", "hoài", "thùy", "tuệ", "thái", "khắc", "tú", "tường",
+    "huyền", "diệp", "phương", "phượng", "quỳnh", "quyên", "lan", "linh", "loan",
+}
 
 # Plausible synthetic place names by administrative unit. These names are
 # intentionally generic and are selected deterministically by marker/index.
@@ -163,6 +193,10 @@ def normalize_for_match(value):
 def marker_value(value):
     value = str(value or "").strip().upper()
     return value if re.fullmatch(r"[A-ZĐ](?:\d)?", value) else None
+
+
+def is_name_prefix_token(token):
+    return normalize_for_match(token) in NAME_PREFIX_TOKENS
 
 
 def marker_initial(marker):
@@ -227,7 +261,32 @@ def classify_marker(text, start, end, ner_label=None):
 
     person_distance = nearest_cue_distance(text, start, end, PERSON_CUE_RE)
     location_distance = nearest_cue_distance(text, start, end, LOCATION_CUE_RE)
-    max_cue_distance = 40
+    max_cue_distance = 24
+    surface = text[start:end]
+    marker = marker_in_span(text, start, end)
+    prefix = ""
+    if marker:
+        surface_marker_matches = list(MARKER_RE.finditer(surface))
+        if not surface_marker_matches:
+            surface_marker_matches = [
+                match for match in COMPACT_MARKER_RE.finditer(surface)
+                if match.start(1) > 0 and surface[match.start(1) - 1].islower()
+            ]
+        if surface_marker_matches:
+            prefix = surface[:surface_marker_matches[-1].start(1)].strip()
+    prefix_tokens = prefix.split()
+    has_name_shape = bool(prefix_tokens) and any(
+        is_name_prefix_token(token) for token in prefix_tokens
+    ) and (
+        len(prefix_tokens) >= 2
+        or any(normalize_for_match(token) in {"thị", "văn"} for token in prefix_tokens)
+    )
+
+    # A recovered form such as Nguyễn Thị L1 or Đặng ĐứcH is stronger than a
+    # nearby unrelated location cue. The prefix is retained in the public
+    # text, so it is useful evidence even when NER missed the whole span.
+    if has_name_shape:
+        return "PER", "name_shape"
 
     # The nearest legal-structure cue is more reliable than counting every
     # cue in a broad window. For example, a defendant may be immediately
@@ -272,7 +331,7 @@ def expand_marker_span(text, marker_match):
         current_start = window_start + current.start(0)
         gap = text[previous_end:current_start]
         token = previous.group(0)
-        if gap.strip() or not token or not token[0].isupper():
+        if gap.strip() or not token or not token[0].isupper() or not is_name_prefix_token(token):
             break
         # Avoid swallowing headings or a preceding sentence's proper noun.
         if token.casefold() in {"page", "trang"}:
@@ -430,9 +489,42 @@ def collect_mentions(text, ner_record):
 
 
 def infer_gender(text, mentions):
-    window = " ".join(text[max(0, m["start"] - 60):min(len(text), m["end"] + 60)] for m in mentions)
-    female = len(re.findall(r"\b(?:bà|chị|cô|mẹ|vợ|nữ)\b", window, re.IGNORECASE))
-    male = len(re.findall(r"\b(?:ông|anh|chú|cha|chồng|nam)\b", window, re.IGNORECASE))
+    female = 0
+    male = 0
+    for mention in mentions:
+        start, end = mention["start"], mention["end"]
+        surface = text[start:end]
+        # Middle names are strong local evidence when the public document
+        # retains them: Nguyễn Thị L is much more likely female, while
+        # Nguyễn Văn L is much more likely male.
+        has_female_middle = bool(re.search(r"\bThị\b", surface))
+        has_male_middle = bool(re.search(r"\bVăn\b", surface))
+        if has_female_middle and not has_male_middle:
+            female += 2
+            continue
+        if has_male_middle and not has_female_middle:
+            male += 2
+            continue
+
+        left = max(0, start - 45)
+        right = min(len(text), end + 45)
+        local = text[left:right]
+        female_distances = []
+        male_distances = []
+        for match in FEMALE_GENDER_CUE_RE.finditer(local):
+            cue_start = left + match.start()
+            cue_end = left + match.end()
+            female_distances.append(0 if cue_start <= end and cue_end >= start else min(abs(start - cue_end), abs(cue_start - end)))
+        for match in MALE_GENDER_CUE_RE.finditer(local):
+            cue_start = left + match.start()
+            cue_end = left + match.end()
+            male_distances.append(0 if cue_start <= end and cue_end >= start else min(abs(start - cue_end), abs(cue_start - end)))
+        nearest_female = min(female_distances) if female_distances else None
+        nearest_male = min(male_distances) if male_distances else None
+        if nearest_female is not None and (nearest_male is None or nearest_female < nearest_male):
+            female += 1
+        elif nearest_male is not None:
+            male += 1
     if female > male:
         return "female"
     if male > female:
@@ -447,7 +539,12 @@ def stable_slot(doc_id, marker):
 
 def choose_given_name(marker, gender, used, doc_id):
     initial = marker_initial(marker)
-    pool = GIVEN_NAMES[gender].get(initial) or GIVEN_NAMES["male"].get(initial) or [f"{initial} Minh"]
+    primary_pool = GIVEN_NAMES[gender].get(initial, [])
+    fallback_pool = FALLBACK_GIVEN_NAMES[gender]
+    # J, W, Z, F, and similar codes can be arbitrary publication markers,
+    # rather than Vietnamese given-name initials. Use a common Vietnamese
+    # fallback instead of inventing strings such as ``J Minh``.
+    pool = primary_pool + [name for name in fallback_pool if name not in primary_pool]
     preferred = marker_index(marker)
     start = (preferred + stable_slot(doc_id, marker)) % len(pool)
     for offset in range(len(pool)):
@@ -455,17 +552,21 @@ def choose_given_name(marker, gender, used, doc_id):
         if value not in used:
             used.add(value)
             return value
-    # This is only reached if a document has more entities than our small
-    # pool. A numeric suffix keeps the synthetic identity unique.
-    value = f"{pool[start]} {marker_index(marker) + 1}"
+    # Never append a number: that creates an unnatural given name. Reusing a
+    # common name is preferable for synthetic data once the pool is exhausted.
+    value = fallback_pool[(preferred + stable_slot(doc_id, marker)) % len(fallback_pool)]
     used.add(value)
     return value
 
 
-def synthetic_person_name(doc_id, marker, mentions, text, used):
-    gender = infer_gender(text, mentions)
-    given = choose_given_name(marker, gender, used, doc_id)
+def marker_initial_preserved(marker, synthetic_value):
+    if not marker or not synthetic_value:
+        return None
+    given_name = str(synthetic_value).split()[-1]
+    return bool(given_name) and given_name[0].upper() == marker_initial(marker)
 
+
+def synthetic_person_name(doc_id, marker, mentions, text, used):
     # Preserve visible family/middle-name structure from the longest mention.
     best = max(mentions, key=lambda item: item["end"] - item["start"])
     surface = text[best["start"]:best["end"]]
@@ -475,7 +576,18 @@ def synthetic_person_name(doc_id, marker, mentions, text, used):
         prefix = surface[:marker_match[-1].start(1)].strip()
         prefix = TITLE_RE.sub("", prefix).strip()
     prefix_tokens = prefix.split()
-    if prefix_tokens and all(token[:1].isupper() for token in prefix_tokens):
+    if re.search(r"\bThị\b", prefix):
+        gender = "female"
+    elif re.search(r"\bVăn\b", prefix):
+        gender = "male"
+    else:
+        gender = infer_gender(text, mentions)
+    given = choose_given_name(marker, gender, used, doc_id)
+    family_name_keys = {normalize_for_match(name) for name in FAMILY_NAMES}
+    has_family_prefix = any(normalize_for_match(token) in family_name_keys for token in prefix_tokens)
+    if prefix_tokens and has_family_prefix and all(token[:1].isupper() for token in prefix_tokens):
+        if normalize_for_match(prefix_tokens[-1]) == normalize_for_match(given):
+            given = choose_given_name(marker, gender, used, doc_id)
         return " ".join(prefix_tokens + [given])
 
     family = FAMILY_NAMES[(stable_slot(doc_id, marker) + marker_index(marker)) % len(FAMILY_NAMES)]
@@ -538,6 +650,11 @@ def link_document(doc_id, text, ner_record):
         else:
             synthetic = None
 
+        if marker and first["label"] == "PER" and synthetic:
+            name_rule = "preserve_marker_initial" if marker_initial_preserved(marker, synthetic) else "common_fallback"
+        else:
+            name_rule = None
+
         entity_mentions = []
         for mention in sorted(group, key=lambda item: (item["start"], item["end"])):
             mention["entity_id"] = entity_id
@@ -565,6 +682,8 @@ def link_document(doc_id, text, ner_record):
             "marker": marker,
             "synthetic_value": synthetic,
             "reconstructable": bool(synthetic and marker),
+            "name_rule": name_rule,
+            "marker_initial_preserved": marker_initial_preserved(marker, synthetic),
             "mentions": entity_mentions,
         })
 
@@ -662,6 +781,8 @@ def main():
                         "marker": entity["marker"],
                         "synthetic_value": entity["synthetic_value"],
                         "reconstructable": entity["reconstructable"],
+                        "name_rule": entity["name_rule"],
+                        "marker_initial_preserved": entity["marker_initial_preserved"],
                     }
                     for entity in audit.get("entities", [])
                 ],
