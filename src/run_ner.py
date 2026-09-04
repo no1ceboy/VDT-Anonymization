@@ -278,8 +278,8 @@ def main():
     parser.add_argument("--output-file", default=DEFAULT_OUTPUT, help="Output prediction JSONL file")
     parser.add_argument("--text-field", default="markdown", help="Input row field containing document text")
     parser.add_argument("--id-field", default="case_id", help="Input row field used as document ID")
-    parser.add_argument("--entity-types", default="PER,LOC",
-                        help="Comma-separated entity types, or 'all' (default: PER,LOC)")
+    parser.add_argument("--entity-types", default="PER,LOC,ORG",
+                        help="Comma-separated entity types, or 'all' (default: PER,LOC,ORG; LOC is a rule-based fallback)")
     parser.add_argument("--limit", type=int, default=0, help="Number of rows to process; 0 means all")
     parser.add_argument("--offset", type=int, default=0, help="Number of JSONL rows to skip")
     parser.add_argument("--max-length", type=int, default=512, help="Tokens per sliding window")

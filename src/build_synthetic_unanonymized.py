@@ -5,13 +5,14 @@ identities for anonymized mentions in already published legal documents.
 
 The pipeline is deliberately recall-oriented:
 
-1. Read normal PER/LOC predictions from ``run_ner.py``.
+1. Read PER/ORG predictions and optional LOC fallback predictions from ``run_ner.py``.
 2. Scan the complete source text for court-style markers such as ``M``, ``L``
    and ``L1`` that NER may miss.
-3. Classify marker candidates using nearby person/location structure.
-4. Link identical markers within a document and entity type.
-5. Generate one synthetic name/location per linked entity.
-6. Replace linked mentions from right to left.
+3. Apply structured address rules before using NER labels.
+4. Classify marker candidates using nearby person/organization/location structure.
+5. Link identical markers within a document and semantic role.
+6. Generate one synthetic value per linked entity.
+7. Replace linked mentions from right to left.
 
 No network, model, or third-party package is required. The NER JSONL may be
 missing or incomplete; marker recovery still runs over the source text.
@@ -42,16 +43,33 @@ MARKER_RE = re.compile(r"(?<![\w])([A-ZĐ](?:\d)?)(?![\w])")
 COMPACT_MARKER_RE = re.compile(r"(?<=[^\W\d_])([A-ZĐ](?:\d)?)(?![\w])")
 
 PERSON_CUE_RE = re.compile(
-    r"(?:ông|bà|anh|chị|em|cô|chú|bác|con|vợ|chồng|cha|mẹ|"
+    r"(?<!\w)(?:ông|bà|anh|chị|em|cô|chú|bác|con|vợ|chồng|cha|mẹ|"
     r"bị\s+cáo|nguyên\s+đơn|bị\s+đơn|người\s+bị\s+hại|"
     r"người\s+có\s+quyền\s+lợi|người\s+liên\s+quan|người\s+làm\s+chứng|"
-    r"luật\s+sư|đại\s+diện|đương\s+sự|bị\s+can|người\s+khởi\s+kiện)",
+    r"luật\s+sư|đại\s+diện|đương\s+sự|bị\s+can|người\s+khởi\s+kiện)(?!\w)",
+    re.IGNORECASE,
+)
+ORGANIZATION_CUE_RE = re.compile(
+    r"(?<!\w)(?:ngân\s+hàng|công\s+ty|tập\s+đoàn|doanh\s+nghiệp|chi\s+nhánh|"
+    r"văn\s+phòng|hợp\s+tác\s+xã|trường|viện|ủy\s+ban|toà\s+án|tòa\s+án|"
+    r"bộ|sở|cục|học\s+viện|quỹ|ban\s+quản\s+lý)(?!\w)",
     re.IGNORECASE,
 )
 LOCATION_CUE_RE = re.compile(
-    r"(?:xã|phường|thị\s+trấn|huyện|quận|thị\s+xã|thành\s+phố|tỉnh|"
-    r"ấp|thôn|khu\s+phố|đường|ngõ|hẻm|khu\s+dân\s+cư|tòa\s+án|tand)",
+    r"(?<!\w)(?:xã|phường|thị\s+trấn|huyện|quận|thị\s+xã|thành\s+phố|tỉnh|"
+    r"ấp|thôn|khu\s+phố|đường|ngõ|hẻm|khu\s+dân\s+cư|tòa\s+án|tand)(?!\w)",
     re.IGNORECASE,
+)
+ADDRESS_SLOT_PATTERNS = (
+    ("house_number", re.compile(r"(?:\bsố(?:\s+nhà)?)\s*$", re.IGNORECASE)),
+    ("floor", re.compile(r"(?:\btầng)\s*$", re.IGNORECASE)),
+    ("room", re.compile(r"(?:\bphòng|\bcăn)\s*$", re.IGNORECASE)),
+    ("parcel", re.compile(r"(?:\blô|\bthửa|\btờ)\s*$", re.IGNORECASE)),
+    ("hamlet", re.compile(r"(?:\bấp|\bthôn|\bkhu\s+phố|\btổ\s+dân\s+phố|\bkhu\s+dân\s+cư)\s*$", re.IGNORECASE)),
+    ("commune", re.compile(r"(?:\bxã|\bphường|\bthị\s+trấn)\s*$", re.IGNORECASE)),
+    ("district", re.compile(r"(?:\bhuyện|\bquận|\bthị\s+xã|\bthành\s+phố)\s*$", re.IGNORECASE)),
+    ("province", re.compile(r"(?:\btỉnh|\bthành\s+phố)\s*$", re.IGNORECASE)),
+    ("street", re.compile(r"(?:\bđường|\bngõ|\bhẻm)\s*$", re.IGNORECASE)),
 )
 TITLE_RE = re.compile(
     r"^(?:ông|bà|anh|chị|em|cô|chú|bác|ông/bà|bà/ông)\s+",
@@ -80,7 +98,35 @@ ENTITY_ALIASES = {
     "PERSON": "PER",
     "LOC": "LOC",
     "LOCATION": "LOC",
+    "ORG": "ORG",
+    "ORGANIZATION": "ORG",
+    "ADDR": "ADDR",
+    "ADDRESS": "ADDR",
 }
+
+# These are synthetic organization-name components, not a list of real
+# companies.  Their Cartesian product provides enough deterministic variety
+# for large datasets while keeping names pronounceable and common in Vietnam.
+ORGANIZATION_NAME_LEFT = [
+    "An", "Bình", "Cao", "Đại", "Đông", "Gia", "Hải", "Hòa", "Hưng", "Kim",
+    "Long", "Minh", "Nam", "Phú", "Quang", "Sơn", "Tân", "Thái", "Thanh",
+    "Thiên", "Thịnh", "Trường", "Việt", "Vĩnh", "Xuân",
+]
+ORGANIZATION_NAME_RIGHT = [
+    "An", "Bình", "Châu", "Đức", "Gia", "Hải", "Hòa", "Khang", "Long", "Minh",
+    "Phát", "Phú", "Quang", "Sơn", "Tâm", "Thành", "Thịnh", "Tiến", "Trung",
+    "Việt", "Vinh", "Yên", "Nguyên", "Đạt", "Lộc",
+]
+SYNTHETIC_ORGANIZATION_NAMES = list(dict.fromkeys([
+    "Minh Việt", "Đại Việt", "An Phát", "Hưng Thịnh", "Tân Thành", "Phú Gia",
+    "Thịnh Vượng", "Thanh Bình", "Hoàng Gia", "Việt An",
+    *[
+    f"{left} {right}"
+    for left in ORGANIZATION_NAME_LEFT
+    for right in ORGANIZATION_NAME_RIGHT
+    if left != right
+    ],
+]))
 
 # These are given-name pools, not recovered identities. They contain only
 # common, single-token Vietnamese given names. We preserve the anonymized
@@ -181,6 +227,13 @@ LOCATION_NAMES = {
         "P": ["Phú An"], "Q": ["Quang An"], "S": ["Sơn An"],
         "T": ["Tân An"], "V": ["Vĩnh An"],
     },
+    "hamlet": {
+        "A": ["An Bình"], "B": ["Bình An"], "C": ["Cầu Mới"],
+        "D": ["Đông Bình"], "Đ": ["Đức Hòa"], "H": ["Hòa Bình"],
+        "L": ["Long Bình"], "M": ["Minh Tân"], "N": ["Nam Bình"],
+        "P": ["Phú Bình"], "Q": ["Quang Trung"], "S": ["Sơn Bình"],
+        "T": ["Tân Bình"], "V": ["Vĩnh Bình"],
+    },
     "generic": {
         "A": ["An Bình"], "B": ["Bình Minh"], "C": ["Cao Sơn"],
         "D": ["Đông An"], "Đ": ["Đức An"], "H": ["Hòa Bình"],
@@ -277,12 +330,98 @@ def nearest_cue_distance(text, start, end, pattern, window=100):
     return min(distances) if distances else None
 
 
+def preceding_cue_distance(text, start, pattern, window=100):
+    """Distance from a marker to the nearest cue occurring before it."""
+    left = max(0, start - window)
+    distances = []
+    for match in pattern.finditer(text[left:start]):
+        distances.append(start - (left + match.end()))
+    return min(distances) if distances else None
+
+
+def structured_address_role(text, start, end, window=80):
+    """Return the address slot immediately governing a value.
+
+    Legal addresses have a strong local grammar.  Looking only at the text
+    immediately before the marker avoids confusing a nearby address cue in a
+    different clause with the marker being classified.
+    """
+    before = text[max(0, start - window):start]
+    for role, pattern in ADDRESS_SLOT_PATTERNS:
+        if pattern.search(before):
+            return role
+
+    # NER often returns the cue together with its value (``Ấp X`` or
+    # ``Số X``), so inspect the beginning of the predicted surface too.
+    surface = text[start:end]
+    surface_prefixes = (
+        ("house_number", re.compile(r"^\s*số(?:\s+nhà)?\s+", re.IGNORECASE)),
+        ("floor", re.compile(r"^\s*tầng\s+", re.IGNORECASE)),
+        ("room", re.compile(r"^\s*(?:phòng|căn)\s+", re.IGNORECASE)),
+        ("parcel", re.compile(r"^\s*(?:lô|thửa|tờ)\s+", re.IGNORECASE)),
+        ("hamlet", re.compile(r"^\s*(?:ấp|thôn|khu\s+phố|tổ\s+dân\s+phố|khu\s+dân\s+cư)\s+", re.IGNORECASE)),
+        ("commune", re.compile(r"^\s*(?:xã|phường|thị\s+trấn)\s+", re.IGNORECASE)),
+        ("district", re.compile(r"^\s*(?:huyện|quận|thị\s+xã|thành\s+phố)\s+", re.IGNORECASE)),
+        ("province", re.compile(r"^\s*(?:tỉnh|thành\s+phố)\s+", re.IGNORECASE)),
+        ("street", re.compile(r"^\s*(?:đường|ngõ|hẻm)\s+", re.IGNORECASE)),
+    )
+    for role, pattern in surface_prefixes:
+        if pattern.search(surface):
+            return role
+    return None
+
+
+def mention_role(text, mention):
+    """Return a stable semantic role used to link repeated markers."""
+    label = canonical_label(mention.get("label"))
+    if label == "ADDR":
+        return structured_address_role(text, mention["start"], mention["end"]) or "address"
+    if label == "LOC":
+        slot = structured_address_role(text, mention["start"], mention["end"])
+        return f"location:{slot}" if slot else "location:freeform"
+    if label == "ORG":
+        return "organization"
+    if label == "PER":
+        return "person"
+    return label.lower()
+
+
 def classify_marker(text, start, end, ner_label=None):
     label = canonical_label(ner_label)
 
     person_distance = nearest_cue_distance(text, start, end, PERSON_CUE_RE)
+    organization_distance = nearest_cue_distance(text, start, end, ORGANIZATION_CUE_RE)
+    person_before_distance = preceding_cue_distance(text, start, PERSON_CUE_RE)
+    organization_before_distance = preceding_cue_distance(text, start, ORGANIZATION_CUE_RE)
     location_distance = nearest_cue_distance(text, start, end, LOCATION_CUE_RE)
     max_cue_distance = 24
+    max_organization_distance = 60
+
+    # Address structure is the highest-confidence signal.  In particular,
+    # ``Số X`` is an address number, not a location entity, while ``Ấp X`` is
+    # a locality.  This rule also overrides an incorrect LOC NER prediction.
+    address_role = structured_address_role(text, start, end)
+    if address_role in {"house_number", "floor", "room", "parcel"}:
+        return "ADDR", "address_structure"
+    if address_role:
+        return "LOC", f"address_structure:{address_role}"
+
+    # Organization cues are more reliable than a broad nearby-location window
+    # for forms such as ``Ngân hàng thương mại cổ phần X``.  A closer person
+    # cue still wins for a person mentioned in an organization-related clause.
+    person_is_closer = (
+        person_before_distance is not None
+        and person_before_distance <= max_cue_distance
+        and organization_before_distance is not None
+        and person_before_distance < organization_before_distance
+    )
+    if (
+        organization_before_distance is not None
+        and organization_before_distance <= max_organization_distance
+        and not person_is_closer
+    ):
+        return "ORG", "organization_context"
+
     surface = text[start:end]
     marker = marker_in_span(text, start, end)
     prefix = ""
@@ -321,6 +460,8 @@ def classify_marker(text, start, end, ner_label=None):
     if location_distance is not None and location_distance <= max_cue_distance:
         return "LOC", "location_context"
     if label in {"PER", "LOC"}:
+        return label, "ner_label"
+    if label == "ORG":
         return label, "ner_label"
     return None, "unresolved_context"
 
@@ -375,6 +516,14 @@ def trim_replacement_span(text, start, end, label):
         prefix = LOCATION_PREFIX_RE.match(value)
         if prefix:
             start += prefix.end()
+    elif label in {"ORG", "ADDR"}:
+        # Replace only the masked value.  Keep ``Ngân hàng ...`` and ``Số``
+        # visible so the generated text retains the document's structure.
+        matches = list(MARKER_RE.finditer(value))
+        if matches:
+            marker_match = matches[-1]
+            start += marker_match.start(1)
+            end = start + (marker_match.end(1) - marker_match.start(1))
     return start, end
 
 
@@ -395,12 +544,16 @@ def is_spurious_marker(text, marker_start, marker_end):
     if after == "." and not (
         ADMINISTRATIVE_PREFIX_RE.search(before)
         or PERSON_MARKER_PREFIX_RE.search(before)
+        or (
+            preceding_cue_distance(text, marker_start, ORGANIZATION_CUE_RE) is not None
+            and preceding_cue_distance(text, marker_start, ORGANIZATION_CUE_RE) <= 60
+        )
     ):
         return True
     return False
 
 
-def marker_in_span(text, start, end):
+def marker_span_in_span(text, start, end):
     matches = [
         match for match in MARKER_RE.finditer(text[start:end])
         if not is_spurious_marker(
@@ -422,7 +575,16 @@ def marker_in_span(text, start, end):
     if not matches:
         return None
     match = matches[-1]
-    return marker_value(match.group(1))
+    return (
+        start + match.start(1),
+        start + match.end(1),
+        marker_value(match.group(1)),
+    )
+
+
+def marker_in_span(text, start, end):
+    span = marker_span_in_span(text, start, end)
+    return span[2] if span else None
 
 
 def overlapping(mention, start, end, label):
@@ -454,19 +616,50 @@ def collect_mentions(text, ner_record):
     ner_entities = (ner_record or {}).get("entities", [])
 
     for entity in ner_entities:
-        label = canonical_label(entity.get("label"))
-        if label not in {"PER", "LOC"}:
+        model_label = canonical_label(entity.get("label"))
+        if model_label not in {"PER", "ORG", "LOC"}:
             continue
         start = max(0, min(len(text), int(entity.get("start", 0))))
         end = max(start, min(len(text), int(entity.get("end", start))))
         if end <= start:
             continue
         marker = marker_in_span(text, start, end)
-        link_evidence = "ner_marker" if marker else "ner"
+        marker_span = marker_span_in_span(text, start, end) if marker else None
+        # Rules own structured address spans.  NER is the primary detector for
+        # people and organizations; LOC NER is retained only as a fallback for
+        # free-form locations outside those structured spans.
+        address_role = structured_address_role(text, start, end)
+        if marker_span:
+            # For a compound NER span such as ``Số 10/11 đường N``, classify
+            # the masked value by the cue immediately before the marker, not
+            # by the first cue in the whole span.
+            address_role = structured_address_role(text, marker_span[0], marker_span[1])
+        if address_role in {"house_number", "floor", "room", "parcel"}:
+            label = "ADDR"
+            link_evidence = "address_rule_overrides_ner" if marker else "address_rule"
+        elif address_role:
+            label = "LOC"
+            link_evidence = f"address_rule_overrides_ner:{address_role}" if marker else f"address_rule:{address_role}"
+        else:
+            label = model_label
+            if model_label == "LOC":
+                link_evidence = "ner_loc_fallback"
+            else:
+                link_evidence = "ner_per_org" if model_label in {"PER", "ORG"} else "ner"
+        if marker and link_evidence == "ner_per_org":
+            link_evidence = "ner_marker_per_org"
+        mention_start, mention_end = start, end
+        if marker_span and (
+            label in {"ORG", "ADDR"}
+            or (label == "LOC" and address_role is not None)
+        ):
+            # Preserve visible cues (``Ngân hàng``, ``Số``, ``đường``, ...)
+            # and replace only the masked value.
+            mention_start, mention_end = marker_span[0], marker_span[1]
         mention = {
-            "text": text[start:end],
-            "start": start,
-            "end": end,
+            "text": text[mention_start:mention_end],
+            "start": mention_start,
+            "end": mention_end,
             "label": label,
             "marker": marker,
             "score": entity.get("score"),
@@ -511,22 +704,24 @@ def collect_mentions(text, ner_record):
         # of the mention, while the address cue belongs to the next clause.
         label, evidence = classify_marker(text, raw_start, raw_end, ner_label)
         candidate_records.append((match, marker, raw_start, raw_end, overlapping_mentions, label, evidence))
-        if label in {"PER", "LOC"}:
+        if label in {"PER", "ORG", "LOC", "ADDR"}:
             known_marker_labels[marker].add(label)
 
     # A bare occurrence may appear far from its role cue. Once the document
     # has established that marker H is a person marker, later bare H mentions
     # can be recovered without requiring another nearby "ông/bị cáo" cue.
     for match, marker, raw_start, raw_end, overlapping_mentions, label, evidence in candidate_records:
-        if label not in {"PER", "LOC"} and len(known_marker_labels[marker]) == 1:
+        if label not in {"PER", "ORG", "LOC", "ADDR"} and len(known_marker_labels[marker]) == 1:
             label = next(iter(known_marker_labels[marker]))
             evidence = "known_marker_propagation"
-        if label not in {"PER", "LOC"}:
+        if label not in {"PER", "ORG", "LOC", "ADDR"}:
             continue
         if overlapping_mentions:
             # Retain the NER span because it usually contains the complete
             # anonymized name, not merely its final marker.
             selected = max(overlapping_mentions, key=lambda item: item["end"] - item["start"])
+            if label in {"ADDR", "LOC"} and label != selected["label"]:
+                selected["label"] = label
             selected["detectors"] = sorted(set(selected["detectors"]) | {"marker_regex"})
             selected["marker"] = marker
             selected["link_evidence"] = "ner_and_marker_regex"
@@ -707,11 +902,16 @@ def location_unit(text, mentions):
         return "district"
     if re.search(r"\b(?:xã|phường|thị\s+trấn)\b", joined, re.IGNORECASE):
         return "commune"
+    if re.search(r"\b(?:ấp|thôn|khu\s+phố|tổ\s+dân\s+phố|khu\s+dân\s+cư)\b", joined, re.IGNORECASE):
+        return "hamlet"
     return "generic"
 
 
 def synthetic_location(doc_id, marker, mentions, text, used):
-    unit = location_unit(text, mentions)
+    role = mention_role(text, mentions[0]) if mentions else "location:freeform"
+    unit = role.split(":", 1)[1] if role.startswith("location:") else location_unit(text, mentions)
+    if unit not in LOCATION_NAMES:
+        unit = location_unit(text, mentions)
     initial = marker_initial(marker)
     pool = LOCATION_NAMES[unit].get(initial) or LOCATION_NAMES["generic"].get(initial)
     if not pool:
@@ -740,22 +940,68 @@ def synthetic_location(doc_id, marker, mentions, text, used):
     return pool[start]
 
 
+def synthetic_organization(doc_id, marker, used):
+    """Create a plausible organization suffix for a masked organization."""
+    start = (marker_index(marker) + stable_slot(doc_id, f"ORG|{marker}")) % len(SYNTHETIC_ORGANIZATION_NAMES)
+    for offset in range(len(SYNTHETIC_ORGANIZATION_NAMES)):
+        value = SYNTHETIC_ORGANIZATION_NAMES[(start + offset) % len(SYNTHETIC_ORGANIZATION_NAMES)]
+        if value not in used:
+            used.add(value)
+            return value
+    return SYNTHETIC_ORGANIZATION_NAMES[start]
+
+
+def synthetic_address_component(doc_id, marker, mentions, text, used):
+    """Create a plausible address number without pretending to recover it."""
+    role = mention_role(text, mentions[0]) if mentions else "house_number"
+    # Keep each structured slot plausible: a floor is not a three-digit house
+    # number, and a room/parcel can use a wider range.  The marker is a
+    # publication placeholder, not evidence of the original numeric value.
+    if role == "floor":
+        lower, size = 1, 30
+    elif role in {"room", "parcel"}:
+        lower, size = 1, 999
+    else:
+        lower, size = 10, 890
+    value = str(lower + (stable_slot(doc_id, f"ADDR|{role}|{marker}") % size))
+    if value not in used:
+        used.add(value)
+        return value
+    for offset in range(1, size):
+        candidate = str(lower + ((int(value) - lower + offset) % size))
+        if candidate not in used:
+            used.add(candidate)
+            return candidate
+    return value
+
+
 def link_document(doc_id, text, ner_record):
     mentions = collect_mentions(text, ner_record)
     groups = defaultdict(list)
     for mention in mentions:
+        role = mention_role(text, mention)
+        mention["role"] = role
         marker = marker_value(mention.get("marker"))
         if marker:
-            key = (mention["label"], marker)
+            # A marker is not a globally unique entity.  ``X`` in a house
+            # number, hamlet, and organization name must be linked separately.
+            key = (mention["label"], marker, role)
         else:
             # Exact unmarked mentions are linked for audit purposes, but are
             # not replaced because they are not demonstrably anonymized.
-            key = (mention["label"], "UNMARKED", normalize_for_match(mention["text"]))
+            key = (
+                mention["label"],
+                "UNMARKED",
+                role,
+                normalize_for_match(mention["text"]),
+            )
         groups[key].append(mention)
 
     ordered_groups = sorted(groups.values(), key=lambda group: min(m["start"] for m in group))
     used_names = set()
     used_locations = set()
+    used_organizations = set()
+    used_address_values = set()
     entities = []
     replacements = []
 
@@ -767,6 +1013,10 @@ def link_document(doc_id, text, ner_record):
             synthetic = synthetic_person_name(doc_id, marker, group, text, used_names)
         elif marker and first["label"] == "LOC":
             synthetic = synthetic_location(doc_id, marker, group, text, used_locations)
+        elif marker and first["label"] == "ORG":
+            synthetic = synthetic_organization(doc_id, marker, used_organizations)
+        elif marker and first["label"] == "ADDR":
+            synthetic = synthetic_address_component(doc_id, marker, group, text, used_address_values)
         else:
             synthetic = None
 
@@ -783,6 +1033,7 @@ def link_document(doc_id, text, ner_record):
                 "start": mention["start"],
                 "end": mention["end"],
                 "marker": mention.get("marker"),
+                "role": mention.get("role"),
                 "score": mention.get("score"),
                 "detectors": mention["detectors"],
                 "link_evidence": mention["link_evidence"],
@@ -799,6 +1050,7 @@ def link_document(doc_id, text, ner_record):
         entities.append({
             "entity_id": entity_id,
             "label": first["label"],
+            "role": first.get("role"),
             "marker": marker,
             "synthetic_value": synthetic,
             "reconstructable": bool(synthetic and marker),
