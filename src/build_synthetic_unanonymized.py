@@ -200,7 +200,7 @@ NAME_PREFIX_TOKENS = {
     "công", "thế", "xuân", "kim", "thúy", "nhật", "quang", "tấn", "thành", "anh", "bảo",
     "gia", "khắc", "trọng", "phước", "phú", "cẩm", "hải", "mạnh", "đình", "văn",
     "trúc", "bích", "bạch", "hoài", "thùy", "tuệ", "thái", "khắc", "tú", "tường",
-    "huyền", "diệp", "phương", "phượng", "quỳnh", "quyên", "lan", "linh", "loan",
+    "huyền", "diệp", "phương", "phượng", "quỳnh", "quyên", "lan", "linh", "loan", "hùng",
 }
 
 # Plausible synthetic place names by administrative unit. These names are
@@ -975,8 +975,71 @@ def synthetic_address_component(doc_id, marker, mentions, text, used):
     return value
 
 
+def person_anchor_key(text, mention):
+    """Return the visible person-name prefix used for conservative linking."""
+    if canonical_label(mention.get("label")) != "PER" or not marker_value(mention.get("marker")):
+        return None
+    tokens = person_prefix_tokens(text[mention["start"]:mention["end"]])
+    if not tokens:
+        return None
+    return " ".join(normalize_for_match(token) for token in tokens)
+
+
+def resolve_person_marker_links(text, mentions):
+    """Attach bare person markers only when their visible anchor is clear.
+
+    Publication markers such as ``T`` are initials, not unique identifiers.
+    Explicit forms are grouped by their visible prefix, while a bare marker is
+    linked to the nearest compatible prefix only when that candidate is clearly
+    closer than every other candidate.  Ambiguous bare markers stay unchanged.
+    """
+    anchored = defaultdict(lambda: defaultdict(list))
+    bare = []
+    for mention in mentions:
+        if mention["label"] != "PER" or not marker_value(mention.get("marker")):
+            continue
+        anchor = person_anchor_key(text, mention)
+        if anchor:
+            mention["person_anchor"] = anchor
+            mention["link_status"] = "explicit_anchor"
+            anchored[mention["marker"]][anchor].append(mention)
+        else:
+            bare.append(mention)
+
+    for mention in bare:
+        marker = mention["marker"]
+        candidates = anchored.get(marker, {})
+        if not candidates:
+            mention["link_status"] = "ambiguous_marker"
+            continue
+        if len(candidates) == 1:
+            anchor = next(iter(candidates))
+            mention["person_anchor"] = anchor
+            mention["link_status"] = "linked_by_unique_anchor"
+            continue
+
+        ranked = sorted(
+            (
+                min(abs(mention["start"] - candidate["start"]) for candidate in candidate_mentions),
+                anchor,
+            )
+            for anchor, candidate_mentions in candidates.items()
+        )
+        nearest_distance, nearest_anchor = ranked[0]
+        second_distance = ranked[1][0]
+        # A small gap is not enough evidence to choose between two people
+        # sharing the same anonymized initial.  The 80-character margin is
+        # deliberately conservative for legal prose.
+        if second_distance - nearest_distance >= 80:
+            mention["person_anchor"] = nearest_anchor
+            mention["link_status"] = "linked_by_nearest_anchor"
+        else:
+            mention["link_status"] = "ambiguous_marker"
+
+
 def link_document(doc_id, text, ner_record):
     mentions = collect_mentions(text, ner_record)
+    resolve_person_marker_links(text, mentions)
     groups = defaultdict(list)
     for mention in mentions:
         role = mention_role(text, mention)
@@ -985,7 +1048,17 @@ def link_document(doc_id, text, ner_record):
         if marker:
             # A marker is not a globally unique entity.  ``X`` in a house
             # number, hamlet, and organization name must be linked separately.
-            key = (mention["label"], marker, role)
+            if mention["label"] == "PER":
+                anchor = mention.get("person_anchor")
+                if anchor:
+                    key = (mention["label"], marker, role, anchor)
+                else:
+                    # Keep each unresolved bare person marker separate.  It
+                    # cannot be safely reconstructed without an identity
+                    # anchor, even if another bare marker has the same letter.
+                    key = (mention["label"], marker, "ambiguous_person", mention["start"])
+            else:
+                key = (mention["label"], marker, role)
         else:
             # Exact unmarked mentions are linked for audit purposes, but are
             # not replaced because they are not demonstrably anonymized.
@@ -1009,7 +1082,9 @@ def link_document(doc_id, text, ner_record):
         first = min(group, key=lambda item: item["start"])
         marker = marker_value(first.get("marker"))
         entity_id = f"{first['label']}_{index:04d}"
-        if marker and first["label"] == "PER":
+        if first.get("link_status") == "ambiguous_marker":
+            synthetic = None
+        elif marker and first["label"] == "PER":
             synthetic = synthetic_person_name(doc_id, marker, group, text, used_names)
         elif marker and first["label"] == "LOC":
             synthetic = synthetic_location(doc_id, marker, group, text, used_locations)
@@ -1034,6 +1109,8 @@ def link_document(doc_id, text, ner_record):
                 "end": mention["end"],
                 "marker": mention.get("marker"),
                 "role": mention.get("role"),
+                "person_anchor": mention.get("person_anchor"),
+                "link_status": mention.get("link_status"),
                 "score": mention.get("score"),
                 "detectors": mention["detectors"],
                 "link_evidence": mention["link_evidence"],
@@ -1052,8 +1129,14 @@ def link_document(doc_id, text, ner_record):
             "label": first["label"],
             "role": first.get("role"),
             "marker": marker,
+            "person_anchor": first.get("person_anchor"),
             "synthetic_value": synthetic,
             "reconstructable": bool(synthetic and marker),
+            "link_status": (
+                "ambiguous_marker"
+                if any(mention.get("link_status") == "ambiguous_marker" for mention in group)
+                else first.get("link_status")
+            ),
             "name_rule": name_rule,
             "marker_initial_preserved": marker_initial_preserved(marker, synthetic),
             "mentions": entity_mentions,
