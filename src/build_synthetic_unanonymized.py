@@ -64,6 +64,16 @@ LOCATION_PREFIX_RE = re.compile(
     r"ấp|thôn|khu\s+phố|đường|ngõ|hẻm)\s+",
     re.IGNORECASE,
 )
+ADMINISTRATIVE_PREFIX_RE = re.compile(
+    r"(?:xã|phường|thị\s+trấn|huyện|quận|thị\s+xã|thành\s+phố|tỉnh|"
+    r"ấp|thôn|khu\s+phố|đường|ngõ|hẻm)\s*$",
+    re.IGNORECASE,
+)
+PERSON_MARKER_PREFIX_RE = re.compile(
+    r"(?:ông|bà|anh|chị|em|cô|chú|bác|ông/bà|bà/ông|bị\s+cáo|"
+    r"nguyên\s+đơn|bị\s+đơn|người\s+bị\s+hại|văn|thị)\s*$",
+    re.IGNORECASE,
+)
 
 ENTITY_ALIASES = {
     "PER": "PER",
@@ -120,7 +130,11 @@ GIVEN_NAMES = {
     },
 }
 
-FAMILY_NAMES = ["Nguyễn", "Trần", "Lê", "Phạm", "Hoàng", "Huỳnh", "Võ", "Vũ", "Đặng", "Bùi"]
+FAMILY_NAMES = [
+    "Nguyễn", "Trần", "Lê", "Phạm", "Hoàng", "Huỳnh", "Võ", "Vũ", "Đặng", "Bùi",
+    "Phan", "Đoàn", "Đinh", "Dương", "Hồ", "Ngô", "Đỗ", "Tô", "Cao", "Lý", "Lưu",
+    "Trương", "Mai", "Mạc", "Hà", "Giang", "Chung", "Chu", "Thái", "Vương", "Lương",
+]
 
 FALLBACK_GIVEN_NAMES = {
     "male": ["Anh", "Bình", "Dũng", "Hải", "Hùng", "Khoa", "Long", "Minh", "Nam", "Phúc", "Quang", "Sơn", "Tuấn", "Vinh"],
@@ -201,6 +215,13 @@ def is_name_prefix_token(token):
 
 def marker_initial(marker):
     return marker[0].upper()
+
+
+def initial_key(value):
+    if not value:
+        return ""
+    first = unicodedata.normalize("NFD", str(value).strip()[0])
+    return "".join(character for character in first if unicodedata.category(character) != "Mn").upper()
 
 
 def marker_index(marker):
@@ -357,12 +378,46 @@ def trim_replacement_span(text, start, end, label):
     return start, end
 
 
+def is_spurious_marker(text, marker_start, marker_end):
+    """Reject obvious abbreviations and administrative OCR artifacts.
+
+    A one-letter marker is useful only when it is a real anonymization token.
+    In particular, ``Thành phốM`` is usually an attached administrative word,
+    while ``H. Định Quán`` uses ``H.`` as an abbreviation. Do not reject
+    ``tỉnh H.`` or ``Nguyễn Văn H.`` because those can be valid masked forms.
+    """
+    before = text[max(0, marker_start - 40):marker_start]
+    compact = marker_start > 0 and text[marker_start - 1].isalpha()
+    if compact and ADMINISTRATIVE_PREFIX_RE.search(before):
+        return True
+
+    after = text[marker_end:marker_end + 1]
+    if after == "." and not (
+        ADMINISTRATIVE_PREFIX_RE.search(before)
+        or PERSON_MARKER_PREFIX_RE.search(before)
+    ):
+        return True
+    return False
+
+
 def marker_in_span(text, start, end):
-    matches = list(MARKER_RE.finditer(text[start:end]))
+    matches = [
+        match for match in MARKER_RE.finditer(text[start:end])
+        if not is_spurious_marker(
+            text,
+            start + match.start(1),
+            start + match.end(1),
+        )
+    ]
     if not matches:
         matches = [
             match for match in COMPACT_MARKER_RE.finditer(text[start:end])
             if match.start(1) > 0 and text[start + match.start(1) - 1].islower()
+            and not is_spurious_marker(
+                text,
+                start + match.start(1),
+                start + match.end(1),
+            )
         ]
     if not matches:
         return None
@@ -422,11 +477,15 @@ def collect_mentions(text, ner_record):
 
     # Scan both forms, but de-duplicate compact matches that are also part of
     # a normal spaced match.
-    marker_matches = list(MARKER_RE.finditer(text))
+    marker_matches = [
+        match for match in MARKER_RE.finditer(text)
+        if not is_spurious_marker(text, match.start(1), match.end(1))
+    ]
     marker_matches.extend(
         match for match in COMPACT_MARKER_RE.finditer(text)
         if match.start(1) > 0
         and text[match.start(1) - 1].islower()
+        and not is_spurious_marker(text, match.start(1), match.end(1))
         and not any(match.start(1) == normal.start(1) for normal in marker_matches)
     )
     known_marker_labels = defaultdict(set)
@@ -544,14 +603,22 @@ def choose_given_name(marker, gender, used, doc_id):
     # J, W, Z, F, and similar codes can be arbitrary publication markers,
     # rather than Vietnamese given-name initials. Use a common Vietnamese
     # fallback instead of inventing strings such as ``J Minh``.
-    pool = primary_pool + [name for name in fallback_pool if name not in primary_pool]
     preferred = marker_index(marker)
-    start = (preferred + stable_slot(doc_id, marker)) % len(pool)
-    for offset in range(len(pool)):
-        value = pool[(start + offset) % len(pool)]
-        if value not in used:
-            used.add(value)
-            return value
+    slot = preferred + stable_slot(doc_id, marker)
+
+    # Prefer a common name beginning with the marker. Only use the fallback
+    # pool after all suitable marker-initial names are already used.
+    pools = [primary_pool] if primary_pool else []
+    pools.append([name for name in fallback_pool if name not in primary_pool])
+    for pool in pools:
+        if not pool:
+            continue
+        start = slot % len(pool)
+        for offset in range(len(pool)):
+            value = pool[(start + offset) % len(pool)]
+            if value not in used:
+                used.add(value)
+                return value
     # Never append a number: that creates an unnatural given name. Reusing a
     # common name is preferable for synthetic data once the pool is exhausted.
     value = fallback_pool[(preferred + stable_slot(doc_id, marker)) % len(fallback_pool)]
@@ -563,19 +630,56 @@ def marker_initial_preserved(marker, synthetic_value):
     if not marker or not synthetic_value:
         return None
     given_name = str(synthetic_value).split()[-1]
-    return bool(given_name) and given_name[0].upper() == marker_initial(marker)
+    return bool(given_name) and initial_key(given_name) == initial_key(marker)
+
+
+def person_prefix_tokens(surface):
+    marker_matches = list(MARKER_RE.finditer(surface))
+    if not marker_matches:
+        marker_matches = list(COMPACT_MARKER_RE.finditer(surface))
+    if not marker_matches:
+        return []
+
+    prefix = surface[:marker_matches[-1].start(1)].strip()
+    prefix = TITLE_RE.sub("", prefix).strip()
+    tokens = prefix.split()
+
+    # OCR occasionally splits a surname, for example ``Nguy ễn``. Rejoin
+    # adjacent tokens only when the result is a known Vietnamese family name.
+    family_name_keys = {normalize_for_match(name): name for name in FAMILY_NAMES}
+    index = 0
+    normalized_tokens = []
+    while index < len(tokens):
+        if index + 1 < len(tokens):
+            joined = normalize_for_match(tokens[index] + tokens[index + 1])
+            if joined in family_name_keys:
+                normalized_tokens.append(family_name_keys[joined])
+                index += 2
+                continue
+        normalized_tokens.append(tokens[index])
+        index += 1
+    return normalized_tokens
+
+
+def person_mention_structure_score(mention, text):
+    surface = text[mention["start"]:mention["end"]]
+    tokens = person_prefix_tokens(surface)
+    family_name_keys = {normalize_for_match(name) for name in FAMILY_NAMES}
+    has_family = any(normalize_for_match(token) in family_name_keys for token in tokens)
+    has_middle = any(normalize_for_match(token) in {"thị", "văn"} for token in tokens)
+    # If multiple mentions have the same structure, keep the first occurrence
+    # in the document. This avoids allowing a later OCR-expanded span to
+    # overwrite the document's original visible surname/middle-name pattern.
+    return (int(has_family), int(has_middle), len(tokens), -mention["start"])
 
 
 def synthetic_person_name(doc_id, marker, mentions, text, used):
-    # Preserve visible family/middle-name structure from the longest mention.
-    best = max(mentions, key=lambda item: item["end"] - item["start"])
+    # Prefer a structurally valid visible name prefix over a merely longer
+    # OCR span. This preserves forms such as ``Nguy ễn Văn M`` as Nguyễn Văn M.
+    best = max(mentions, key=lambda item: person_mention_structure_score(item, text))
     surface = text[best["start"]:best["end"]]
-    marker_match = list(MARKER_RE.finditer(surface)) or list(COMPACT_MARKER_RE.finditer(surface))
-    prefix = ""
-    if marker_match:
-        prefix = surface[:marker_match[-1].start(1)].strip()
-        prefix = TITLE_RE.sub("", prefix).strip()
-    prefix_tokens = prefix.split()
+    prefix_tokens = person_prefix_tokens(surface)
+    prefix = " ".join(prefix_tokens)
     if re.search(r"\bThị\b", prefix):
         gender = "female"
     elif re.search(r"\bVăn\b", prefix):
@@ -611,13 +715,29 @@ def synthetic_location(doc_id, marker, mentions, text, used):
     initial = marker_initial(marker)
     pool = LOCATION_NAMES[unit].get(initial) or LOCATION_NAMES["generic"].get(initial)
     if not pool:
-        pool = [f"{initial} An"]
+        # Publication markers are not guaranteed to be place-name initials.
+        # Fall back to a real-looking name from the same administrative unit;
+        # never emit artificial values such as ``K An`` or ``X An``.
+        pool = list(dict.fromkeys(
+            value
+            for values in LOCATION_NAMES[unit].values()
+            for value in values
+        ))
+    if not pool:
+        pool = list(dict.fromkeys(
+            value
+            for values in LOCATION_NAMES["generic"].values()
+            for value in values
+        ))
     start = (marker_index(marker) + stable_slot(doc_id, marker)) % len(pool)
-    value = pool[start]
-    if value in used:
-        value = f"{value} {marker_index(marker) + 1}"
-    used.add(value)
-    return value
+    for offset in range(len(pool)):
+        value = pool[(start + offset) % len(pool)]
+        if value not in used:
+            used.add(value)
+            return value
+    # Reuse a plausible location rather than adding an unnatural numeric
+    # suffix after the small synthetic pool is exhausted.
+    return pool[start]
 
 
 def link_document(doc_id, text, ner_record):
