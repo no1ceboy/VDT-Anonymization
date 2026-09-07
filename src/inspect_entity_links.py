@@ -11,10 +11,14 @@ import argparse
 import html
 import json
 import os
+import hashlib
 from collections import Counter
 
 
 LABEL_COLORS = {
+    "ORG": ("#c4b5fd", "#312e81"),
+    "ADDR": ("#bbf7d0", "#14532d"),
+    "UNKNOWN": ("#fecaca", "#7f1d1d"),
     "PER": ("#ffe08a", "#5c4300"),
     "LOC": ("#a8d8ff", "#063b5c"),
 }
@@ -64,8 +68,16 @@ def make_spans(audit_row, text_length):
                 "score": mention.get("score"),
                 "detectors": mention.get("detectors", []),
                 "link_evidence": mention.get("link_evidence"),
+                "review_reasons": mention.get("review_reasons", []),
+                "ner_evidence": mention.get("ner_evidence", []),
                 "mention_text": mention.get("text", ""),
             })
+    for index, observation in enumerate(audit_row.get('ner_observations', [])):
+        if any(s['start'] < observation['end'] and observation['start'] < s['end'] for s in spans):
+            continue
+        spans.append(dict(observation, entity_id=f'NER_{index}', marker=None,
+                          synthetic_value=None, link_evidence='unmodified NER observation',
+                          ner_evidence=[observation], review_reasons=[]))
     return spans
 
 
@@ -110,11 +122,14 @@ def render_document(text, spans):
             f"{label} | entity={selected['entity_id']} | "
             f"marker={selected.get('marker') or 'unmarked'} | "
             f"synthetic={selected.get('synthetic_value') or 'unchanged'} | "
-            f"confidence={score_text} | "
-            f"evidence={selected.get('link_evidence') or 'n/a'}"
+            f"legacy/NER score={score_text} (not linking confidence) | "
+            f"evidence={selected.get('link_evidence') or 'n/a'} | "
+            f"review={', '.join(selected.get('review_reasons', []))} | "
+            f"NER observations={json.dumps(selected.get('ner_evidence', []), ensure_ascii=False)}"
         )
         rendered.append(
             f"<mark class='entity entity-{html.escape(label.lower())}' "
+            f"data-entity-id='{html.escape(selected['entity_id'], quote=True)}' "
             f"style='background:{background};color:{foreground}' "
             f"title='{html.escape(title, quote=True)}'>"
             f"{html.escape(text[left:right])}</mark>"
@@ -130,8 +145,10 @@ def entity_table(audit_row):
         first_text = mentions[0].get("text", "") if mentions else ""
         scores = [m.get("score") for m in mentions if isinstance(m.get("score"), (int, float))]
         score = f"{sum(scores) / len(scores):.3f}" if scores else "n/a"
+        decisions = [m['llm_decision'] for m in mentions if m.get('llm_decision')]
+        evidence = html.escape(json.dumps(decisions, ensure_ascii=False, indent=2))
         rows.append(
-            "<tr>"
+            f"<tr data-entity-id='{html.escape(str(entity.get('entity_id','')), quote=True)}'>"
             f"<td>{html.escape(str(entity.get('entity_id', '')))}</td>"
             f"<td>{html.escape(str(entity.get('label', '')))}</td>"
             f"<td>{html.escape(str(entity.get('marker') or 'unmarked'))}</td>"
@@ -140,6 +157,12 @@ def entity_table(audit_row):
             f"<td>{len(mentions)}</td>"
             f"<td>{score}</td>"
             f"<td>{html.escape(str(entity.get('name_rule') or ''))}</td>"
+            f"<td>{html.escape(str(entity.get('encoding_scheme') or ''))}</td>"
+            f"<td>{html.escape(str(entity.get('procedural_role') or ''))}</td>"
+            f"<td>{html.escape(str(entity.get('link_status') or ''))}"
+            f"<br>{html.escape(', '.join(entity.get('review_reasons', [])))}"
+            + (f"<details><summary>LLM decisions</summary><pre>{evidence}</pre></details>" if decisions else "")
+            + "</td>"
             "</tr>"
         )
     return "".join(rows)
@@ -147,6 +170,9 @@ def entity_table(audit_row):
 
 def build_html(doc_id, source_row, audit_row, synthetic_row=None):
     source_text = str(source_row.get("markdown", source_row.get("text", "")))
+    source_hash = hashlib.sha256(source_text.encode()).hexdigest()
+    if audit_row.get('source_sha256') not in (None, source_hash):
+        raise ValueError('Audit does not match the source text; regenerate the artifacts')
     spans = make_spans(audit_row, len(source_text))
     highlighted, conflict_segments = render_document(source_text, spans)
     label_counts = Counter(entity.get("label") for entity in audit_row.get("entities", []))
@@ -157,10 +183,19 @@ def build_html(doc_id, source_row, audit_row, synthetic_row=None):
 
     synthetic_section = ""
     if synthetic_text:
+        if synthetic_row.get('original_anonymized_markdown', source_text) != source_text:
+            raise ValueError('Synthetic artifact does not match the source document')
+        synthetic_spans=[]
+        for replacement in audit_row.get('replacements', []):
+            if 'synthetic_start' in replacement:
+                synthetic_spans.append(dict(start=replacement['synthetic_start'],end=replacement['synthetic_end'],
+                    label=replacement['label'],entity_id=replacement['entity_id'],marker=replacement.get('original'),
+                    synthetic_value=replacement['replacement'],link_evidence='applied replacement'))
+        synthetic_html,_=render_document(synthetic_text,synthetic_spans)
         synthetic_section = (
-            "<h2>Synthetic reconstruction</h2>"
-            "<p class='note'>This text is shown without highlights because its character offsets change after replacement.</p>"
-            f"<pre class='document'>{html.escape(synthetic_text)}</pre>"
+            "<section><h2>Synthetic reconstruction</h2>"
+            "<p class='note'>Click an entity to select its mentions in both documents.</p>"
+            f"<pre class='document'>{synthetic_html}</pre></section>"
         )
 
     return f"""<!doctype html>
@@ -176,6 +211,8 @@ h1, h2 {{ margin-bottom: 8px; }}
 .badge {{ border-radius: 5px; padding: 4px 8px; font-weight: 700; }}
 .document {{ white-space: pre-wrap; overflow-wrap: anywhere; font: 14px/1.7 Consolas, monospace; background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 8px; padding: 16px; max-height: 75vh; overflow: auto; }}
 .entity {{ border-radius: 3px; padding: 1px 2px; cursor: help; }}
+.documents {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(360px,1fr)); gap:16px; }}
+.selected {{ outline: 3px solid #db2777; outline-offset: 1px; }}
 .stats {{ background: #fff8c5; border: 1px solid #d4a72c; border-radius: 6px; padding: 10px; }}
 details {{ margin-top: 18px; }}
 table {{ border-collapse: collapse; width: 100%; font-size: 13px; }}
@@ -187,29 +224,47 @@ th {{ background: #f6f8fa; position: sticky; top: 0; }}
 <body>
 <h1>Entity inspection: document {html.escape(str(doc_id))}</h1>
 <div class='stats'>
+  Pipeline: {html.escape(str(audit_row.get('pipeline_version', 'legacy output')))} |
+  Status: {html.escape(str(audit_row.get('review_status', 'not assessed')))} |
   Entities: {len(audit_row.get('entities', []))} |
   Mentions: {len(spans)} |
   Marker-based entities: {marker_entities} |
   Labels: {html.escape(str(dict(label_counts)))} |
   Overlap segments resolved for display: {conflict_segments}
 </div>
+<p><b>Review reasons:</b> {html.escape(', '.join(audit_row.get('review_reasons', [])) or 'No recorded flags; this is not a human approval.')}</p>
 <div class='legend'>
   <span class='badge' style='background:#ffe08a;color:#5c4300'>PER</span>
   <span class='badge' style='background:#a8d8ff;color:#063b5c'>LOC</span>
-  <span>Hover a highlight to see entity ID, marker, confidence, and replacement.</span>
+  <span class='badge' style='background:#c4b5fd;color:#312e81'>ORG</span>
+  <span class='badge' style='background:#bbf7d0;color:#14532d'>ADDR</span>
+  <span class='badge' style='background:#fecaca;color:#7f1d1d'>UNKNOWN</span>
+  <span>Hover for evidence; click to select the same entity throughout.</span>
 </div>
+<div class='documents'><section>
 <h2>Complete original document</h2>
 <pre class='document'>{highlighted}</pre>
+</section>
 {synthetic_section}
+</div>
 <details>
 <summary><b>Linked entity table</b></summary>
 <div class='table-wrap'>
 <table>
-<thead><tr><th>Entity ID</th><th>Label</th><th>Marker</th><th>First mention</th><th>Synthetic value</th><th>Mentions</th><th>Avg. confidence</th><th>Name rule</th></tr></thead>
+<thead><tr><th>Entity ID</th><th>Label</th><th>Marker</th><th>First mention</th><th>Synthetic value</th><th>Mentions</th><th>Legacy NER score</th><th>Name rule</th><th>Encoding</th><th>Procedural role</th><th>Link status / review / evidence</th></tr></thead>
 <tbody>{entity_table(audit_row)}</tbody>
 </table>
 </div>
 </details>
+<script>
+document.addEventListener('click', event => {{
+  const target=event.target.closest('[data-entity-id]');
+  if (!target) return;
+  document.querySelectorAll('[data-entity-id]').forEach(node => {{
+    node.classList.toggle('selected',node.dataset.entityId===target.dataset.entityId);
+  }});
+}});
+</script>
 </body>
 </html>
 """

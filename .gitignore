@@ -25,6 +25,8 @@ models/
 *.ckpt
 
 # Logs and OS/editor files
+.env
+.env.*
 *.log
 .DS_Store
 Thumbs.db
