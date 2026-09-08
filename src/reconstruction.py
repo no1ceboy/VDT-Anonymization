@@ -259,15 +259,20 @@ def link_candidates(text, mentions, resolver=None, doc_id=''):
 
 def person_value(doc_id,key,group,used):
     genders={m.get('gender') for m in group if m.get('gender')}
-    if len(genders)>1:return None,'conflicting_gender_evidence'
-    gender=next(iter(genders)) if genders else None
+    # Gender improves realism when available, but it is not an identity
+    # constraint. Court text can omit titles or contain inconsistent ones.
+    # Fall back to a neutral pool instead of blocking a valid initial.
+    gender=next(iter(genders)) if len(genders)==1 else None
     prefixes={m.get('name_prefix') for m in group if m.get('name_prefix')}
     if len(prefixes)>1:return None,'conflicting_name_prefixes'
     prefix=next(iter(prefixes)) if prefixes else ''
     marker=group[0]['marker']; dotted=group[0]['encoding_scheme']=='dotted_initials'
     families=FAMILY_NAMES
     middles=['Thị'] if gender=='female' else ['Văn'] if gender=='male' else ['']
-    pool=list(dict.fromkeys(n for values in GIVEN_NAMES[gender].values() for n in values)) if gender else NEUTRAL
+    neutral_pool=list(dict.fromkeys(
+        n for gender_values in GIVEN_NAMES.values() for values in gender_values.values() for n in values
+    ))
+    pool=list(dict.fromkeys(n for values in GIVEN_NAMES[gender].values() for n in values)) if gender else neutral_pool
     if dotted:
         letters=marker.split('.')
         if len(letters)!=3 or any(len(s)!=1 for s in letters):return None,'unsupported_dotted_initials'
@@ -279,6 +284,8 @@ def person_value(doc_id,key,group,used):
     elif prefix:
         initial=re.sub(r'\d+$','',marker)
         pool=[n for n in pool if n.startswith(initial)]
+        if not pool and gender:
+            pool=[n for n in neutral_pool if n.startswith(initial)]
     if not pool or not families or not middles:return None,'no_compatible_synthetic_name'
     offset=stable_slot(doc_id,key)
     for i in range(len(pool)*len(families)*len(middles)):
@@ -307,7 +314,15 @@ def replacement_value(doc_id,key,group,used):
         unit=role if role in LOCATION_NAMES else 'generic'
         pool=list(dict.fromkeys(s for values in LOCATION_NAMES[unit].values() for s in values))
     elif label=='ADDR':
-        return str(1+slot%(20 if role=='floor' else 300)),None
+        ranges={
+            'floor': (1, 8),
+            'house_number': (1, 300),
+            'room': (101, 508),
+            'parcel': (1, 300),
+            'road_number': (1, 300),
+        }
+        low,high=ranges.get(role,(1,300))
+        return str(low+slot%(high-low+1)),None
     else:return None,'unsupported_entity_type'
     for i in range(len(pool)):
         value=pool[(slot+i)%len(pool)]

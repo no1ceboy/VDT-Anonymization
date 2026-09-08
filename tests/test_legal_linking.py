@@ -176,6 +176,28 @@ class CourtConventions(unittest.TestCase):
         self.assertEqual(person['synthetic_value'].split()[-1][0], 'Q')
         self.assertNotIn('unsupported_name_prefix', person['review_reasons'])
 
+    def test_gender_conflict_does_not_block_valid_initial(self):
+        text='Ông Nguyễn Phát Q. Bà Nguyễn Phát Q.'
+        _,row,_,details=process_row(
+            0, {'markdown':text},
+            prediction(text,[('Nguyễn Phát Q','PER')]),
+            'markdown')
+        person=next(entity for entity in details['entities'] if entity['label']=='PER')
+        self.assertTrue(person['reconstructable'])
+        self.assertEqual(person['synthetic_value'].split()[-1][0], 'Q')
+
+    def test_address_numbers_use_small_role_ranges(self):
+        text='Địa chỉ: Số X, tầng Y, phòng Z, ấp A, xã B, huyện C.'
+        _,_,_,details=process_row(
+            0, {'markdown':text},
+            prediction(text,[('X','LOC'),('Y','LOC'),('Z','LOC'),('A','LOC'),('B','LOC'),('C','LOC')]),
+            'markdown')
+        values={e['role']:int(e['synthetic_value']) for e in details['entities'] if e['label']=='ADDR'}
+        self.assertLessEqual(values['floor'],8)
+        self.assertGreaterEqual(values['floor'],1)
+        self.assertLessEqual(values['house_number'],300)
+        self.assertLessEqual(values['room'],508)
+
     def test_unknown_type_llm_propagates_code(self):
         resolver = GeminiResolver('test', 'unused')
         text = 'NLQ1 nhận thông báo. NLQ 1 trả lời.'
