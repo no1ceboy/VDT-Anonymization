@@ -198,6 +198,18 @@ class CourtConventions(unittest.TestCase):
         self.assertLessEqual(values['house_number'],300)
         self.assertLessEqual(values['room'],508)
 
+    def test_bank_legal_form_is_not_section_number(self):
+        text='Nguyên đơn Ngân hàng thương mại cổ phần X'
+        _,row,_,details=process_row(
+            0, {'markdown':text},
+            prediction(text,[('X','ORG')]),
+            'markdown')
+        organization=next(entity for entity in details['entities'] if entity['label']=='ORG')
+        self.assertTrue(organization['reconstructable'])
+        self.assertTrue(organization['synthetic_value'])
+        self.assertNotEqual(organization['synthetic_value'], 'X')
+        self.assertEqual(details['replacements'][0]['original'], 'X')
+
     def test_unknown_type_llm_propagates_code(self):
         resolver = GeminiResolver('test', 'unused')
         text = 'NLQ1 nhận thông báo. NLQ 1 trả lời.'

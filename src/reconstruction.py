@@ -116,7 +116,11 @@ def detect_candidates(text, ner_record):
             m['link_status']='rejected_nonentity'; m['link_evidence']='abbreviation_or_identifier'; continue
         if NONENTITY_PREFIX.search(before):
             m['link_status']='rejected_nonentity'; m['link_evidence']='technical_or_enumeration_context'; continue
-        if re.search(r'(?:Page|PHẦN|MỤC)\s*$',before,re.I):
+        # Section-number protection is intentionally case-sensitive. A legal
+        # organization such as ``Ngân hàng thương mại cổ phần X`` contains
+        # lowercase ``phần`` immediately before its anonymized marker; that
+        # must not be mistaken for a ``PHẦN X`` heading.
+        if re.search(r'(?:Page|PHẦN|MỤC)\s*$',before):
             m['link_status']='rejected_nonentity'; m['link_evidence']='section_number'; continue
 
         address = ADDRESS_PREFIX.search(before)
