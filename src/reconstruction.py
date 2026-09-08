@@ -177,7 +177,14 @@ def detect_candidates(text, ner_record):
                 if surface:
                     m.update(start=best['start'],text=text[best['start']:end],name_prefix=surface,
                              person_anchor=normalize(surface),encoding_scheme='name_initial')
-                    issue(m,'unsupported_name_prefix')
+                    # A partially masked NER span is not automatically an
+                    # unsupported name.  Recognized Vietnamese family names
+                    # (e.g. Nguyễn Phát Q) are valid anchors and should be
+                    # allowed to reach the compatible given-name generator.
+                    family_head=normalize(surface.split()[0]) if surface.split() else ''
+                    known_families={normalize(name) for name in FAMILY_NAMES}
+                    if family_head not in known_families:
+                        issue(m,'unsupported_name_prefix')
         # All other tokens stay UNKNOWN. Knowing that another M is a person
         # cannot turn this occurrence into a person or a place.
         if title:

@@ -164,6 +164,18 @@ class CourtConventions(unittest.TestCase):
         _,row,_,_=process_row(0,{'markdown':text},prediction(text,[('Nguyễn Văn H','PER'),('Nguyễn Văn Hùng','PER')]),'markdown')
         self.assertIn('possible_unmasked_alias',row['review_reasons'])
 
+    def test_common_vietnamese_family_prefix_can_generate_masked_given_name(self):
+        text='Bị đơn: Ông Nguyễn Phát Q, sinh năm 1979. Ông Q có mặt.'
+        _,row,_,details=process_row(
+            0, {'markdown':text},
+            prediction(text,[('Nguyễn Phát Q','PER'),('Q','PER')]),
+            'markdown')
+        person=next(entity for entity in details['entities'] if entity['label']=='PER')
+        self.assertTrue(person['reconstructable'])
+        self.assertTrue(person['synthetic_value'].startswith('Nguyễn Phát '))
+        self.assertEqual(person['synthetic_value'].split()[-1][0], 'Q')
+        self.assertNotIn('unsupported_name_prefix', person['review_reasons'])
+
     def test_unknown_type_llm_propagates_code(self):
         resolver = GeminiResolver('test', 'unused')
         text = 'NLQ1 nhận thông báo. NLQ 1 trả lời.'
