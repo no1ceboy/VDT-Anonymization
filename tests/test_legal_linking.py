@@ -152,8 +152,17 @@ class CourtConventions(unittest.TestCase):
         rendered=build_html('0',row,audit,out)
         self.assertIn("class='documents'",rendered)
         self.assertIn('data-entity-id=',rendered)
-        self.assertIn('Evidence', 'Evidence')
         with self.assertRaises(ValueError):build_html('0',{'markdown':'changed'},audit,out)
+        mismatched=dict(out,synthetic_markdown='Different run')
+        with self.assertRaises(ValueError):build_html('0',row,audit,mismatched)
+
+    def test_unmasked_alias_requires_matching_initial(self):
+        text='Ông Nguyễn Văn H. Ông Nguyễn Văn Bình ký.'
+        _,row,_,_=process_row(0,{'markdown':text},prediction(text,[('Nguyễn Văn H','PER'),('Nguyễn Văn Bình','PER')]),'markdown')
+        self.assertNotIn('possible_unmasked_alias',row['review_reasons'])
+        text='Ông Nguyễn Văn H. Ông Nguyễn Văn Hùng ký.'
+        _,row,_,_=process_row(0,{'markdown':text},prediction(text,[('Nguyễn Văn H','PER'),('Nguyễn Văn Hùng','PER')]),'markdown')
+        self.assertIn('possible_unmasked_alias',row['review_reasons'])
 
     def test_unknown_type_llm_propagates_code(self):
         resolver = GeminiResolver('test', 'unused')

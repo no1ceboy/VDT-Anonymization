@@ -185,6 +185,11 @@ def build_html(doc_id, source_row, audit_row, synthetic_row=None):
     if synthetic_text:
         if synthetic_row.get('original_anonymized_markdown', source_text) != source_text:
             raise ValueError('Synthetic artifact does not match the source document')
+        expected=source_text
+        for replacement in sorted(audit_row.get('replacements', []), key=lambda p:p['start'], reverse=True):
+            expected=expected[:replacement['start']]+replacement['replacement']+expected[replacement['end']:]
+        if expected != synthetic_text:
+            raise ValueError('Synthetic text and audit are from different runs; regenerate matching artifacts')
         synthetic_spans=[]
         for replacement in audit_row.get('replacements', []):
             if 'synthetic_start' in replacement:
@@ -255,6 +260,9 @@ th {{ background: #f6f8fa; position: sticky; top: 0; }}
 <tbody>{entity_table(audit_row)}</tbody>
 </table>
 </div>
+</details>
+<details><summary>Rejected candidates (including LLM decisions)</summary>
+<pre class='document'>{html.escape(json.dumps(audit_row.get('rejected_candidates', []),ensure_ascii=False,indent=2))}</pre>
 </details>
 <script>
 document.addEventListener('click', event => {{

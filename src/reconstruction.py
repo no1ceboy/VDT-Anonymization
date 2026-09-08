@@ -329,7 +329,9 @@ def build_entities(doc_id,text,mentions,ner):
             if n['label']!='PER' or any(n['start']<=m['start'] and n['end']>=m['end'] for m in group):continue
             if TOKEN_RE.search(n['text']):continue
             prefix=next((m.get('name_prefix') for m in group if m.get('name_prefix')),None)
-            if prefix and normalize(n['text']).startswith(normalize(prefix)+' '):
+            initial = re.sub(r'\d+$','',first['marker'])
+            if (prefix and normalize(n['text']).startswith(normalize(prefix)+' ')
+                    and n['text'].split()[-1].startswith(initial)):
                 for m in group:issue(m,'possible_unmasked_alias')
                 break
         value,reason=replacement_value(doc_id,str(key),group,used)

@@ -72,6 +72,7 @@ def process_row(row_number, row, ner_record, text_field, resolver=None):
     output_row["reconstruction_stats"] = {
         "roundtrip_verified": True,
         "review_entities": sum(bool(e.get('review_reasons')) for e in entities),
+        "overlap_conflict_entities": sum('overlapping_replacement_spans' in e.get('review_reasons', []) for e in entities),
         "rejected_candidates": sum(m.get('link_status') == 'rejected_nonentity' for m in mentions),
         "unresolved_types": sum(e.get("link_status") == "unresolved_type" for e in entities),
         "llm_accepted_mentions": sum(m.get("link_status") == "linked_by_llm" for m in mentions),

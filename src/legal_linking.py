@@ -106,7 +106,7 @@ class GeminiResolver:
             for peer in mentions:
                 anchor = peer.get("person_anchor")
                 if ((peer["label"] == mention["label"] or (mention['label']=='UNKNOWN' and peer['label']=='PER')) and peer.get("marker") == mention.get("marker")
-                        and anchor and peer.get("link_status") != "linked_by_llm"):
+                        and anchor and not peer.get("llm_decision")):
                     candidates.setdefault(anchor, []).append(peer)
             if not candidates:
                 continue
