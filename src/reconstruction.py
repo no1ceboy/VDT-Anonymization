@@ -34,12 +34,50 @@ ADDRESS_UNITS = {
 }
 UNIT_PATTERN = "|".join(re.escape(s) for s in sorted(ADDRESS_UNITS, key=len, reverse=True))
 ADDRESS_PREFIX = re.compile(rf"(?<!\w)({UNIT_PATTERN})\s*$", re.I)
-PARENT_RE = re.compile(r"(?:xã|phường|thị trấn|huyện|quận|thị xã|thành phố|tỉnh)\s+[^,;\n.]+", re.I)
+# Capture only the administrative unit and its immediate value. The previous
+# expression consumed surrounding legal prose, causing the same `huyện V` to
+# receive different scopes at different positions in a document.
+PARENT_RE = re.compile(r"(?:xã|phường|thị trấn|huyện|quận|thị xã|thành phố|tỉnh)\s+[^\s,;:.()\-]+", re.I)
 NONENTITY_PREFIX = re.compile(r"(?:loại|mã|ký hiệu|biển số|số hiệu|điểm|hạng|nhóm)\s*$", re.I)
 FOREIGN_RE = re.compile(r"Đài Loan|Trung Quốc|Australia|Sydney|Hoa Kỳ|Hàn Quốc|Nhật Bản", re.I)
 GENDER = {"ông":"male", "anh":"male", "chú":"male", "bà":"female", "chị":"female", "cô":"female"}
 NEUTRAL = ["Anh", "An", "Bình", "Hà", "Minh", "Thanh", "Tâm"]
 MIDDLES = ["Văn", "Thị", "Hữu", "Đức", "Ngọc", "Quốc", "Hoàng", "Thanh", "Minh", "Gia", "Xuân"]
+
+# Broader, familiar Vietnamese place vocabulary. These are synthetic values,
+# not attempts to recover the source location. Keeping several alternatives
+# per administrative role prevents every document from cycling through the
+# same small set of two-syllable names.
+PROVINCE_NAMES = [
+    "An Giang", "Bắc Giang", "Bắc Ninh", "Bình Định", "Bình Dương",
+    "Bình Phước", "Cà Mau", "Cao Bằng", "Đà Nẵng", "Đắk Lắk",
+    "Điện Biên", "Đồng Nai", "Đồng Tháp", "Gia Lai", "Hà Nam",
+    "Hà Tĩnh", "Hải Dương", "Hậu Giang", "Hòa Bình", "Khánh Hòa",
+    "Kiên Giang", "Lâm Đồng", "Lạng Sơn", "Lào Cai", "Long An",
+    "Nam Định", "Nghệ An", "Ninh Bình", "Ninh Thuận", "Phú Thọ",
+    "Phú Yên", "Quảng Bình", "Quảng Nam", "Quảng Ngãi", "Quảng Ninh",
+    "Sóc Trăng", "Sơn La", "Tây Ninh", "Thái Bình", "Thái Nguyên",
+    "Thanh Hóa", "Tiền Giang", "Trà Vinh", "Tuyên Quang", "Vĩnh Long",
+    "Vĩnh Phúc", "Yên Bái",
+]
+
+LOCATION_VARIANTS = {
+    "district": [
+        "An Bình", "Bình Minh", "Cao Lãnh", "Đức Hòa", "Đông Hòa",
+        "Hòa Thành", "Long Thành", "Minh Long", "Nam Giang", "Phú Bình",
+        "Quế Sơn", "Tân Châu", "Thuận Thành", "Vạn Ninh", "Xuân Lộc",
+    ],
+    "commune": [
+        "An Hòa", "Bình An", "Cẩm Tú", "Đông Phú", "Hòa Bình",
+        "Long Hưng", "Minh Tân", "Nam Sơn", "Phú An", "Quang Trung",
+        "Tân Lập", "Thanh Sơn", "Vĩnh Hòa", "Xuân Thịnh", "Yên Phú",
+    ],
+    "hamlet": [
+        "An Bình", "Bình Hòa", "Cầu Mới", "Đông Bình", "Hòa Phú",
+        "Long Bình", "Minh Tân", "Nam Bình", "Phú Bình", "Quang Trung",
+        "Tân Bình", "Thanh Bình", "Vĩnh Bình", "Xuân Bình", "Yên Bình",
+    ],
+}
 
 
 def normalize(value):
@@ -317,6 +355,10 @@ def replacement_value(doc_id,key,group,used):
         if not first.get('address_parents'):return None,'missing_address_parent'
         unit=role if role in LOCATION_NAMES else 'generic'
         pool=list(dict.fromkeys(s for values in LOCATION_NAMES[unit].values() for s in values))
+        if unit=='province':
+            pool=list(dict.fromkeys(PROVINCE_NAMES+pool))
+        else:
+            pool=list(dict.fromkeys(LOCATION_VARIANTS.get(unit,[])+pool))
     elif label=='ADDR':
         ranges={
             'floor': (1, 8),
