@@ -107,10 +107,41 @@ class CourtConventions(unittest.TestCase):
         text='làng A, xã B, huyện C, tỉnh D; làng A, xã E, huyện F, tỉnh G.'
         _,row,audit,_=process_row(0,{'markdown':text},None,'markdown')
         villages=[e for e in audit['entities'] if e['role']=='hamlet']
-        self.assertEqual(len(villages),2)
+        self.assertEqual(len(villages),1)
         self.assertTrue(all(p['original'] not in {'làng A','xã B'} for p in audit['replacements']))
         self.assertEqual(row['synthetic_markdown'].count('làng '),2)
-        self.assertNotEqual(villages[0]['synthetic_value'],villages[1]['synthetic_value'])
+        self.assertFalse(villages[0]['reconstructable'])
+        self.assertIn('conflicting_location_parents',villages[0]['review_reasons'])
+
+    def test_ner_spacing_repairs_preserve_source_and_link_aliases(self):
+        text='Ông Nguy ễn Hùng T. Ông Nguyễn Hùng T. Tòa án hu yện V, tỉnh H. Huyện V.'
+        ner=prediction(text,[('Nguy ễn Hùng T','PER'),('Nguyễn Hùng T','PER'),('Tòa án hu yện V','ORG')])
+        _,row,audit,_=process_row(0,{'markdown':text},ner,'markdown')
+        persons=[e for e in audit['entities'] if e['label']=='PER']
+        self.assertEqual(len(persons),1)
+        self.assertEqual(len(persons[0]['mentions']),2)
+        self.assertTrue(persons[0]['reconstructable'])
+        districts=[e for e in audit['entities'] if e['role']=='district']
+        self.assertEqual(len(districts),1)
+        self.assertEqual(len(districts[0]['mentions']),2)
+        self.assertEqual(row['original_anonymized_markdown'],text)
+        self.assertTrue(any(m.get('ocr_spacing_repairs') for e in audit['entities'] for m in e['mentions']))
+        self.assertTrue(all(text[p['start']:p['end']]==p['original'] for p in audit['replacements']))
+        # No NER evidence: do not repair the split prefix globally.
+        _,_,without,_=process_row(0,{'markdown':'hu yện V'},None,'markdown')
+        self.assertFalse(without['replacements'])
+
+    def test_location_alias_links_with_missing_parents(self):
+        text='Tòa án huyện V tỉnh H. Huyện V giải quyết. Xã V, huyện V, tỉnh H. Xã V, huyện V.'
+        _,row,audit,_=process_row(0,{'markdown':text},None,'markdown')
+        district=[e for e in audit['entities'] if e['role']=='district']
+        commune=[e for e in audit['entities'] if e['role']=='commune']
+        self.assertEqual(len(district),1)
+        self.assertEqual(len(district[0]['mentions']),4)
+        self.assertEqual(len(commune),1)
+        self.assertTrue(district[0]['reconstructable'])
+        self.assertTrue(commune[0]['reconstructable'])
+        self.assertNotEqual(district[0]['entity_id'],commune[0]['entity_id'])
 
     def test_compact_person_separator(self):
         text='Bị đơn: Bà N. Theo bàN trình bày.'

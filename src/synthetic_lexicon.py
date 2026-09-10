@@ -1,14 +1,24 @@
-"""Deterministic synthetic vocabulary. No detection or linking rules."""
+"""Deterministic synthetic vocabulary. No detection or linking rules.
+
+Expanded using selected examples from the local VLSP2016 training vocabulary
+(datnth1709/VLSP2016-NER-data; numeric PER/ORG mapping inferred from examples).
+Selections are editorial: corpus annotations do not supply gender or given-name
+boundaries. Rare fragments and foreign names were not imported automatically.
+"""
 
 ORGANIZATION_NAME_LEFT = [
     "An", "Bình", "Cao", "Đại", "Đông", "Gia", "Hải", "Hòa", "Hưng", "Kim",
     "Long", "Minh", "Nam", "Phú", "Quang", "Sơn", "Tân", "Thái", "Thanh",
     "Thiên", "Thịnh", "Trường", "Việt", "Vĩnh", "Xuân",
+    # Components observed in Hoàng Đạt, Khai Minh, Hùng Vương, Hồng Lĩnh,
+    # Trung Kiên, Triều Phú, Phong Phú and Phương Nam.
+    "Hoàng", "Khai", "Hùng", "Hồng", "Trung", "Triều", "Phong", "Phương",
 ]
 ORGANIZATION_NAME_RIGHT = [
     "An", "Bình", "Châu", "Đức", "Gia", "Hải", "Hòa", "Khang", "Long", "Minh",
     "Phát", "Phú", "Quang", "Sơn", "Tâm", "Thành", "Thịnh", "Tiến", "Trung",
     "Việt", "Vinh", "Yên", "Nguyên", "Đạt", "Lộc",
+    "Vương", "Lĩnh", "Kiên", "Hữu", "Đồng",
 ]
 SYNTHETIC_ORGANIZATION_NAMES = list(dict.fromkeys([
     "Minh Việt", "Đại Việt", "An Phát", "Hưng Thịnh", "Tân Thành", "Phú Gia",
@@ -29,19 +39,20 @@ GIVEN_NAMES = {
     "male": {
         "A": ["An", "Anh"],
         "B": ["Bảo", "Bình"],
-        "C": ["Cường", "Chính", "Công"],
+        "C": ["Cường", "Chính", "Công", "Chí", "Chương", "Chiến", "Cảnh"],
         "D": ["Dũng", "Duy", "Dương"],
-        "Đ": ["Đạt", "Đức", "Đăng"],
+        "Đ": ["Đạt", "Đức", "Đăng", "Đại", "Đông", "Định"],
         "G": ["Gia", "Giang"],
-        "H": ["Hải", "Hùng", "Hoàng", "Hưng", "Hiếu", "Huy"],
-        "K": ["Khoa", "Kiên", "Khôi", "Khánh", "Khang"],
-        "L": ["Long", "Lâm", "Lộc"],
+        "H": ["Hải", "Hùng", "Hoàng", "Hưng", "Hiếu", "Huy", "Hào", "Hiệp", "Hiển", "Huấn"],
+        "K": ["Khoa", "Kiên", "Khôi", "Khánh", "Khang", "Khải", "Khương", "Kha"],
+        "L": ["Long", "Lâm", "Lộc", "Luân", "Lân", "Liêm", "Lợi"],
         "M": ["Minh", "Mạnh"],
-        "N": ["Nam", "Nghĩa", "Nhân", "Nguyên", "Ngọc"],
+        "N": ["Nam", "Nghĩa", "Nhân", "Nguyên", "Ngọc", "Nhật"],
         "P": ["Phúc", "Phong", "Phát", "Phước"],
-        "Q": ["Quang", "Quốc", "Quân"],
+        "Q": ["Quang", "Quốc", "Quân", "Quí", "Quyền"],
         "S": ["Sơn", "Sang", "Sinh"],
-        "T": ["Tuấn", "Tùng", "Trung", "Thành", "Thắng", "Tiến", "Tâm", "Thịnh", "Trí"],
+        "T": ["Tuấn", "Tùng", "Trung", "Thành", "Thắng", "Tiến", "Tâm", "Thịnh", "Trí",
+              "Tấn", "Toàn", "Tân", "Tài", "Thiện", "Thái", "Thông", "Trường", "Thuận", "Triết"],
         "V": ["Việt", "Vinh", "Vũ", "Vương"],
         "X": ["Xuân"],
     },
@@ -52,15 +63,16 @@ GIVEN_NAMES = {
         "D": ["Diễm", "Dung", "Duyên", "Diệp"],
         "Đ": ["Đan", "Đào"],
         "G": ["Giang", "Giao"],
-        "H": ["Hạnh", "Hoa", "Hương", "Hiền", "Hồng", "Hà", "Hằng", "Huyền", "Hoài"],
-        "K": ["Kim", "Kiều", "Khánh"],
+        "H": ["Hạnh", "Hoa", "Hương", "Hiền", "Hồng", "Hà", "Hằng", "Huyền", "Hoài", "Huệ"],
+        "K": ["Kim", "Kiều", "Khánh", "Khuê"],
         "L": ["Lan", "Linh", "Loan", "Liên"],
         "M": ["Mai", "My", "Mỹ"],
-        "N": ["Ngân", "Nga", "Ngọc", "Nhung", "Nhi", "Như", "Nguyên"],
+        "N": ["Ngân", "Nga", "Ngọc", "Nhung", "Nhi", "Như", "Nguyên", "Nhã"],
         "P": ["Phương", "Phượng"],
         "Q": ["Quỳnh", "Quyên"],
         "S": ["Sen", "Sương"],
-        "T": ["Trang", "Thảo", "Trinh", "Thúy", "Thanh", "Tâm", "Tiên", "Tuyết", "Tú"],
+        "T": ["Trang", "Thảo", "Trinh", "Thúy", "Thanh", "Tâm", "Tiên", "Tuyết", "Tú",
+              "Trâm", "Thư", "Trúc", "Thu", "Thoa", "Thắm", "Trân", "Thương"],
         "V": ["Vân", "Vy", "Vi"],
         "X": ["Xuân"],
         "Y": ["Yến"],
@@ -135,4 +147,3 @@ LOCATION_NAMES = {
         "T": ["Tân Bình"], "V": ["Vĩnh An"],
     },
 }
-

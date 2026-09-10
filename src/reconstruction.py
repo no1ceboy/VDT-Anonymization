@@ -133,6 +133,38 @@ def observations(text, ner_record):
     return result
 
 
+def repair_ner_spacing(text, start, end, ner):
+    """Repair dictionary-supported spacing only in a matching view.
+
+    Offsets and source text remain untouched. The caller excludes the marker
+    from this interval. Repairs cannot cross punctuation or line boundaries.
+    """
+    edits = {}
+    for observation in ner:
+        left, right = max(start, observation['start']), min(end, observation['end'])
+        if left >= right:
+            continue
+        vocabulary = FAMILY_NAMES if observation['label']=='PER' else ADDRESS_UNITS
+        fragment = text[left:right]
+        for word in vocabulary:
+            pattern = r'(?<!\w)' + r'[ \t]*'.join(re.escape(c) for c in word.replace(' ','')) + r'(?!\w)'
+            for match in re.finditer(pattern, fragment, re.I):
+                raw = match.group()
+                if normalize(raw) == normalize(word):
+                    continue
+                a, b = left+match.start(), left+match.end()
+                edits[(a,b)] = {'start':a,'end':b,'original':raw,'normalized':word}
+    ordered = sorted(edits.values(),key=lambda e:(e['start'],-e['end']))
+    accepted=[]
+    for edit in ordered:
+        if not accepted or edit['start']>=accepted[-1]['end']:
+            accepted.append(edit)
+    view=text[start:end]
+    for edit in reversed(accepted):
+        view=view[:edit['start']-start]+edit['normalized']+view[edit['end']-start:]
+    return view, accepted
+
+
 def detect_candidates(text, ner_record):
     ner = observations(text, ner_record)
     candidates = []
@@ -142,11 +174,15 @@ def detect_candidates(text, ner_record):
         before = text[max(0,start-150):start]
         after = text[end:end+120]
         overlapping = [n for n in ner if n['start'] <= start and n['end'] >= end]
+        before, spacing_repairs = repair_ner_spacing(text,max(0,start-150),start,overlapping)
         m = dict(start=start,end=end,text=text[start:end],marker=token,label='UNKNOWN',
                  score=None,ner_evidence=overlapping,detectors=['lexical'],
                  link_evidence='unconfirmed',encoding_scheme='unconfirmed',link_status='unconfirmed_marker',
                  review_reasons=[],person_anchor=None,role='unknown')
         candidates.append(m)
+        if spacing_repairs:
+            m['ocr_spacing_repairs']=spacing_repairs
+            m['detectors'].append('ner_spacing_repair')
         # Reject lexical fragments of identifiers. Rejection is occurrence-local.
         if start and text[start-1].isalnum() and not text[start-1].islower():
             m['link_status']='rejected_nonentity'; m['link_evidence']='inside_uppercase_word_or_identifier'; continue
@@ -214,7 +250,10 @@ def detect_candidates(text, ner_record):
             # replacement for an unsupported name family (e.g. Liao, Chih).
             if m['label']=='PER':
                 best=max(overlapping,key=lambda n:n['end']-n['start'])
-                surface=text[best['start']:start].strip()
+                surface, repairs=repair_ner_spacing(text,best['start'],start,[best])
+                surface=surface.strip()
+                if repairs:
+                    m['ocr_spacing_repairs']=repairs
                 surface=re.sub(r'^(?:ông|bà|anh|chị|cháu)\s+','',surface,flags=re.I)
                 if surface:
                     m.update(start=best['start'],text=text[best['start']:end],name_prefix=surface,
@@ -352,7 +391,6 @@ def replacement_value(doc_id,key,group,used):
             return None,'organization_code_needs_full_form'
         pool=SYNTHETIC_ORGANIZATION_NAMES
     elif label=='LOC':
-        if not first.get('address_parents'):return None,'missing_address_parent'
         unit=role if role in LOCATION_NAMES else 'generic'
         pool=list(dict.fromkeys(s for values in LOCATION_NAMES[unit].values() for s in values))
         if unit=='province':
@@ -382,7 +420,9 @@ def build_entities(doc_id,text,mentions,ner):
         if m['link_status']=='rejected_nonentity':continue
         if m['encoding_scheme']=='procedural_code':key=('code',m['marker'])
         elif m['label']=='PER' and m.get('person_anchor'):key=('PER',m['marker'],m['person_anchor'])
-        elif m['label'] in {'LOC','ADDR'} and m.get('address_unit'):
+        elif m['label']=='LOC' and m.get('address_unit'):
+            key=('LOC',m['address_unit'],m['marker'])
+        elif m['label']=='ADDR' and m.get('address_unit'):
             key=(m['label'],m['address_unit'],m['marker'],m.get('identity_scope',''))
         elif m['label']=='ORG' and m.get('organization_form'):
             key=('ORG',m['organization_form'],m['marker'])
@@ -393,6 +433,26 @@ def build_entities(doc_id,text,mentions,ner):
     used.update(n['text'] for n in ner if n['label']=='PER')
     for index,(key,group) in enumerate(sorted(groups.items(),key=lambda item:min(m['start'] for m in item[1])),1):
         group.sort(key=lambda m:m['start']); first=group[0]
+        if first['label']=='LOC' and first.get('address_unit'):
+            # Missing parents are compatible with the document's established
+            # alias. Compare only higher administrative levels; a stray
+            # "xã hội" in a heading is not a district's parent.
+            ranks={'hamlet':0,'street':0,'commune':1,'district':2,'city':2,'province':3}
+            parents_by_unit=defaultdict(set)
+            for mention in group:
+                for parent in mention.get('address_parents',[]):
+                    for unit in sorted(ADDRESS_UNITS,key=len,reverse=True):
+                        if parent.startswith(unit+' '):
+                            if ranks.get(ADDRESS_UNITS[unit],-1)>ranks.get(first['role'],0):
+                                parents_by_unit[unit].add(parent[len(unit):].strip())
+                            break
+            conflict=any(len(values)>1 for values in parents_by_unit.values())
+            for mention in group:
+                if conflict:
+                    issue(mention,'conflicting_location_parents')
+                    mention['link_status']='location_parent_conflict'
+                else:
+                    mention['link_status']='linked_by_document_location_alias'
         for n in ner:
             if n['label']!='PER' or any(n['start']<=m['start'] and n['end']>=m['end'] for m in group):continue
             if TOKEN_RE.search(n['text']):continue
