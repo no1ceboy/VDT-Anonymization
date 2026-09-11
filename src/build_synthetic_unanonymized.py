@@ -8,9 +8,11 @@ from collections import Counter
 try:
     from .legal_linking import GeminiResolver, load_api_key, verify_roundtrip
     from .reconstruction import VERSION, link_document, apply_replacements, marker_value, observations
+    from .reconstruction_quality import score_document
 except ImportError:
     from legal_linking import GeminiResolver, load_api_key, verify_roundtrip
     from reconstruction import VERSION, link_document, apply_replacements, marker_value, observations
+    from reconstruction_quality import score_document
 
 DEFAULT_SOURCE = "datasets/legal_test.jsonl"
 DEFAULT_NER = "outputs/nlphust_legal_test.jsonl"
@@ -53,6 +55,9 @@ def process_row(row_number, row, ner_record, text_field, resolver=None):
     document_issues = []
     if ner_record is None:
         document_issues.append('missing_ner_predictions')
+    elif ner_record.get('error'):
+        document_issues.append('ner_inference_error')
+        ner_record = None
     elif ner_record.get('char_len') not in (None, len(source_text)):
         document_issues.append('ner_source_length_mismatch')
         ner_record = None
@@ -105,6 +110,9 @@ def process_row(row_number, row, ner_record, text_field, resolver=None):
         "entities": entities,
         "replacements": applied,
     }
+    quality = score_document(audit, output_row)
+    output_row["reconstruction_quality"] = quality
+    audit["reconstruction_quality"] = quality
     return doc_id, output_row, audit, {"mentions": mentions, "entities": entities, "replacements": applied}
 
 

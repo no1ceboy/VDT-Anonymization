@@ -3,7 +3,9 @@ import unittest
 from unittest.mock import patch
 
 from src.build_synthetic_unanonymized import link_document, process_row, marker_value
+from src.curate_court_dataset import interest_features, stable_rank, stratum
 from src.legal_linking import GeminiResolver
+from src.reconstruction_quality import score_document
 
 
 def prediction(text, surfaces):
@@ -15,6 +17,88 @@ def prediction(text, surfaces):
 
 
 class CourtConventions(unittest.TestCase):
+    def test_administrative_gazetteer(self):
+        from src.location_gazetteer import records, names, parent_components
+        self.assertEqual(len(records()),10806)
+        self.assertEqual(parent_components(', tỉnh Hà Nam nhận định rằng'),['tỉnh hà nam'])
+        self.assertEqual(parent_components(', tỉnh Hà Tĩnh'),['tỉnh hà tĩnh'])
+        self.assertEqual(parent_components(', tỉnh H — CỘNG HÒA XÃ HỘI'),['tỉnh h'])
+        self.assertEqual(parent_components(' theo chính sách xã hội'),[])
+        for unit in ('tỉnh','huyện','quận','thị xã','thành phố','xã','phường','thị trấn'):
+            text=f'{unit} Z.'
+            _,_,audit,_=process_row(0,{'markdown':text},None,'markdown')
+            entity=next(e for e in audit['entities'] if e['marker']=='Z')
+            self.assertTrue(entity['reconstructable'],unit)
+            self.assertIn(entity['synthetic_value'],names(unit))
+
+    def test_quality_score_rejects_review_reasons(self):
+        clean = score_document({
+            'audit_stats': {'roundtrip_verified': True, 'replacements': 2},
+            'review_reasons': [],
+        })
+        self.assertEqual(clean['quality_score'], 100)
+        self.assertTrue(clean['eligible'])
+        reviewed = score_document({
+            'audit_stats': {'roundtrip_verified': True, 'replacements': 2},
+            'review_reasons': ['ambiguous_identity'],
+        })
+        self.assertLess(reviewed['quality_score'], clean['quality_score'])
+        self.assertFalse(reviewed['eligible'])
+        self.assertIn('ambiguous_identity', reviewed['hard_fail_reasons'])
+
+    def test_quality_score_requires_a_replacement(self):
+        result = score_document({'audit_stats': {'roundtrip_verified': True, 'replacements': 0}})
+        self.assertFalse(result['eligible'])
+        self.assertIn('insufficient_replacements', result['reasons'])
+
+    def test_ner_inference_error_is_not_treated_as_empty_predictions(self):
+        _, _, audit, _ = process_row(
+            0,
+            {'case_id': 'ner-error', 'markdown': 'Bá»‹ cÃ¡o A.'},
+            {'doc_id': 'ner-error', 'char_len': 13, 'entities': [], 'error': 'CUDA failure'},
+            'markdown',
+        )
+        self.assertIn('ner_inference_error', audit['review_reasons'])
+        self.assertFalse(score_document(audit)['eligible'])
+
+    def test_curation_is_deterministic_and_marker_focused(self):
+        features = interest_features('Bị cáo Nguyễn Văn A, huyện B; NLQ 1; N.H.H')
+        self.assertGreater(features['interest_score'], 0)
+        self.assertEqual(stable_rank('seed', '42'), stable_rank('seed', '42'))
+        self.assertNotEqual(stable_rank('seed', '42'), stable_rank('other', '42'))
+        self.assertEqual(stratum({'case_type': 'hình sự', 'doc_type': 'ban_an', 'cap_xet_xu': 'Sơ thẩm'}),
+                         'hình sự|ban_an|Sơ thẩm')
+
+    def test_full_parent_names_preserve_conflicts(self):
+        text='huyện V, tỉnh Hà Nam; huyện V, tỉnh Hà Tĩnh.'
+        _,_,audit,_=process_row(0,{'markdown':text},None,'markdown')
+        entities=[e for e in audit['entities'] if e['marker']=='V']
+        self.assertTrue(entities)
+        self.assertTrue(all(not e['reconstructable'] for e in entities))
+
+    def test_gazetteer_spacing_keeps_offsets_and_aliases(self):
+        from src.reconstruction import observations
+        text='xã Vĩnh Thạ nh'
+        record=observations(text,prediction(text,[(text,'LOC')]))[0]
+        self.assertEqual(record['normalized_text'],'xã Vĩnh Thạnh')
+        self.assertEqual(record['text'],text)
+        text='xã V'
+        record=observations(text,prediction(text,[(text,'LOC')]))[0]
+        self.assertEqual(record['normalized_text'],text)
+
+    def test_short_person_mentions_use_given_name(self):
+        text='Bị cáo: Nguyễn Văn M. Anh M khai. Bị cáo M có mặt.'
+        ner=prediction(text,[('Nguyễn Văn M','PER')])
+        # Provide independent person evidence for the role-only reference.
+        pos=text.rindex('M')
+        ner['entities'].append(dict(start=pos,end=pos+1,text='M',label='PER',score=1))
+        _,row,audit,_=process_row(0,{'markdown':text},ner,'markdown')
+        entity=next(e for e in audit['entities'] if e['label']=='PER')
+        full=entity['synthetic_value']; given=full.split()[-1]
+        self.assertEqual(len(entity['mentions']),3)
+        self.assertEqual(row['synthetic_markdown'],f'Bị cáo: {full}. Anh {given} khai. Bị cáo {given} có mặt.')
+        self.assertEqual(len({p['entity_id'] for p in audit['replacements']}),1)
+
     def test_location_prefix_lookback_three_token_limit(self):
         from src.reconstruction import observations
         for prefix in ('hu yện', 'h u yện', 'thành ph ố'):

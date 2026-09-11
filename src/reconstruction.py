@@ -8,8 +8,10 @@ import re
 from collections import defaultdict
 
 try:
+    from .location_gazetteer import names as admin_names, parent_components, spacing_repairs as admin_spacing_repairs, UNITS as ADMIN_UNITS
     from .synthetic_lexicon import FAMILY_NAMES, GIVEN_NAMES, NAME_PREFIX_TOKENS, LOCATION_NAMES, SYNTHETIC_ORGANIZATION_NAMES
 except ImportError:
+    from location_gazetteer import names as admin_names, parent_components, spacing_repairs as admin_spacing_repairs, UNITS as ADMIN_UNITS
     from synthetic_lexicon import FAMILY_NAMES, GIVEN_NAMES, NAME_PREFIX_TOKENS, LOCATION_NAMES, SYNTHETIC_ORGANIZATION_NAMES
 
 VERSION = "evidence-v2"
@@ -34,10 +36,6 @@ ADDRESS_UNITS = {
 }
 UNIT_PATTERN = "|".join(re.escape(s) for s in sorted(ADDRESS_UNITS, key=len, reverse=True))
 ADDRESS_PREFIX = re.compile(rf"(?<!\w)({UNIT_PATTERN})\s*$", re.I)
-# Capture only the administrative unit and its immediate value. The previous
-# expression consumed surrounding legal prose, causing the same `huyện V` to
-# receive different scopes at different positions in a document.
-PARENT_RE = re.compile(r"(?:xã|phường|thị trấn|huyện|quận|thị xã|thành phố|tỉnh)\s+[^\s,;:.()\-]+", re.I)
 NONENTITY_PREFIX = re.compile(r"(?:loại|mã|ký hiệu|biển số|số hiệu|điểm|hạng|nhóm)\s*$", re.I)
 FOREIGN_RE = re.compile(r"Đài Loan|Trung Quốc|Australia|Sydney|Hoa Kỳ|Hàn Quốc|Nhật Bản", re.I)
 GENDER = {"ông":"male", "anh":"male", "chú":"male", "bà":"female", "chị":"female", "cô":"female"}
@@ -48,18 +46,7 @@ MIDDLES = ["Văn", "Thị", "Hữu", "Đức", "Ngọc", "Quốc", "Hoàng", "Th
 # not attempts to recover the source location. Keeping several alternatives
 # per administrative role prevents every document from cycling through the
 # same small set of two-syllable names.
-PROVINCE_NAMES = [
-    "An Giang", "Bắc Giang", "Bắc Ninh", "Bình Định", "Bình Dương",
-    "Bình Phước", "Cà Mau", "Cao Bằng", "Đà Nẵng", "Đắk Lắk",
-    "Điện Biên", "Đồng Nai", "Đồng Tháp", "Gia Lai", "Hà Nam",
-    "Hà Tĩnh", "Hải Dương", "Hậu Giang", "Hòa Bình", "Khánh Hòa",
-    "Kiên Giang", "Lâm Đồng", "Lạng Sơn", "Lào Cai", "Long An",
-    "Nam Định", "Nghệ An", "Ninh Bình", "Ninh Thuận", "Phú Thọ",
-    "Phú Yên", "Quảng Bình", "Quảng Nam", "Quảng Ngãi", "Quảng Ninh",
-    "Sóc Trăng", "Sơn La", "Tây Ninh", "Thái Bình", "Thái Nguyên",
-    "Thanh Hóa", "Tiền Giang", "Trà Vinh", "Tuyên Quang", "Vĩnh Long",
-    "Vĩnh Phúc", "Yên Bái",
-]
+PROVINCE_NAMES = list(dict.fromkeys(admin_names('tỉnh') + admin_names('thành phố')))
 
 LOCATION_VARIANTS = {
     "district": [
@@ -155,6 +142,11 @@ def repair_ner_spacing(text, start, end, ner):
                 [name for groups in LOCATION_NAMES.values() for names in groups.values() for name in names] +
                 [name for names in LOCATION_VARIANTS.values() for name in names]))
         fragment = text[left:right]
+        if observation['label'] in {'LOC','ORG'}:
+            for edit in admin_spacing_repairs(text,left,right):
+                if not any(edit['start'] < left+m.end() and edit['end'] > left+m.start()
+                           for m in TOKEN_RE.finditer(fragment)):
+                    edits[(edit['start'],edit['end'])]=edit
         for word in vocabulary:
             pattern = r'(?<!\w)' + r'[ \t]*'.join(re.escape(c) for c in word.replace(' ','')) + r'(?!\w)'
             for match in re.finditer(pattern, fragment, re.I):
@@ -265,12 +257,11 @@ def detect_candidates(text, ner_record):
             if re.fullmatch(r'I+|IV|VI+|IX|XI+', token):
                 issue(m,'numeral_or_alias')
             tail = re.split(r'[;\n.!?]',text[end:end+250])[0]
-            parents = [normalize(p.group()) for p in PARENT_RE.finditer(tail)]
+            parents = parent_components(tail)
             m['address_parents']=parents
             m['identity_scope']='|'.join(parents)
             block = text[max(0,start-120):end+250].split('\nNỘI DUNG')[0]
             if FOREIGN_RE.search(block): issue(m,'unsupported_foreign_address')
-            if role=='province': issue(m,'province_alias_requires_review')
             if role=='road_number': issue(m,'road_number_or_alias')
         elif organization:
             m.update(label='ORG',role='organization',encoding_scheme='component_alias',
@@ -438,8 +429,8 @@ def replacement_value(doc_id,key,group,used):
     elif label=='LOC':
         unit=role if role in LOCATION_NAMES else 'generic'
         pool=list(dict.fromkeys(s for values in LOCATION_NAMES[unit].values() for s in values))
-        if unit=='province':
-            pool=list(dict.fromkeys(PROVINCE_NAMES+pool))
+        if first.get('address_unit') in ADMIN_UNITS:
+            pool=[name for name in admin_names(first['address_unit']) if not name.isdigit()]
         else:
             pool=list(dict.fromkeys(LOCATION_VARIANTS.get(unit,[])+pool))
     elif label=='ADDR':
@@ -523,6 +514,13 @@ def build_entities(doc_id,text,mentions,ner):
         if value:
             for m in group:
                 replacement=value
+                # Preserve mention granularity: a full masked name receives
+                # the full identity, while a standalone initial receives the
+                # generated given name. Current given-name pools contain one
+                # syllable per entry. Procedural codes/dotted names stay full.
+                if (m['label']=='PER' and not m.get('name_prefix')
+                        and re.fullmatch(r'[A-ZĐ](?:[ \t]*[1-9]\d*)?',m['text'])):
+                    replacement=value.split()[-1]
                 if m['start'] and text[m['start']-1].isalnum():replacement=' '+replacement
                 if m['end']<len(text) and text[m['end']].isalnum():replacement+=' '
                 planned.append(dict(entity_id=eid,label=m['label'],start=m['start'],end=m['end'],replacement=replacement))

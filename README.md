@@ -1,5 +1,33 @@
 # Vietnamese legal synthetic reconstruction
 
+## Prepare the court-document collection
+
+`src/prepare_court_dataset.py` downloads only the document Parquet shards from
+`tmquan/congbobanan-toaan-gov-vn`, pins the resolved repository revision, and
+converts them to one UTF-8 JSONL with the existing `case_id` and `markdown`
+fields. All source columns are retained. It requires `pyarrow` and, for online
+downloads, `huggingface_hub`; neither is needed to read the prepared JSONL.
+
+```powershell
+python src/prepare_court_dataset.py --output-dir datasets/court_documents
+```
+
+Set `HF_TOKEN` in the process environment if repository access requires a token.
+Use `--max-shards 1` for a first-shard download, or `--local-parquet PATH` for
+offline conversion of existing shards. Existing prepared outputs are never
+overwritten. Failed conversion leaves a `.partial` file, which is not pipeline
+input. The manifest records source hashes, revision (when known), row counts,
+and skipped empty/duplicate records. No train/test split is inferred.
+
+```powershell
+python src/run_ner.py --input-file datasets/court_documents/documents.jsonl --output-file outputs/ner_predictions.jsonl --limit 20 --device auto
+python src/build_synthetic_unanonymized.py --input-file datasets/court_documents/documents.jsonl --ner-file outputs/ner_predictions.jsonl --limit 20
+```
+
+Use the same `documents.jsonl` as `--source-file` for the HTML inspector.
+`datasets/court_documents_local/`, if present, is an independently prepared
+local-shard subset, not a verified complete/current Hugging Face snapshot.
+
 The pipeline generates synthetic replacements for masked references in published court documents. It does not recover hidden identities. Run commands from the repository root; existing notebook shell commands remain compatible.
 
 ## Design: evidence-v2
@@ -32,7 +60,15 @@ The former proximity/marker-propagation engine has been removed. NER evidence re
 - A declared whole-name alias such as `Bị đơn: Ông A` does not constrain the generated name's initial.
 - Dotted initials such as `N.H.H` are atomic. Supported three-part codes receive compatible family/middle/given initials; unsupported forms remain intact.
 - Abbreviations and technical identifiers such as `V/v` and `loại A50` are preserved. Uppercase fragments inside Vietnamese headings are excluded.
-- Address-unit words stay outside replacement spans. Roman numerals, foreign addresses, missing parent context and province aliases require review.
+- Address-unit words stay outside replacement spans. Roman numerals, foreign addresses and conflicting explicit parents require review. Missing parents alone do not prevent reconstruction.
+
+### Offline administrative location vocabulary
+
+Reconstruction uses the bundled [dvhcvn vocabulary](resources/dvhcvn/SOURCE.md): a pinned **1 March 2025** snapshot with 63 province-level, 696 district-level and 10,047 commune-level records. Source IDs and parent IDs are retained in `resources/dvhcvn/units.tsv`, with upstream attribution and license alongside it. No download is needed at runtime. `python src/import_dvhcvn.py` regenerates these resources from the pinned upstream revision when internet is available.
+
+- Administrative replacements use real names of the exact unit (`huyện`, `quận`, `xã`, `phường`, etc.), excluding purely numeric names for alphabetic aliases. Hamlet/street names retain synthetic fallback pools. Alias initials are not enforced for locations.
+- Detection still prioritizes explicit address grammar. The vocabulary recognizes complete adjacent parent names, avoiding truncated names and arbitrary prose. Dictionary-supported spacing repair operates within NER spans, protects anonymization markers and leaves source offsets/text untouched. It is not a standalone full-document location NER replacement.
+- Repeated unit-plus-alias mentions keep the existing document-level linking; explicit conflicting parents trigger review. Names are sampled independently: a generated address is **not guaranteed to be a valid administrative hierarchy**. The snapshot is historical, not a current-boundary database.
 - Unsupported foreign name prefixes, fragmented OCR names, possible unmasked aliases, incompatible name pools and conflicting evidence remain unresolved.
 - Procedural organizations need a complete organization form before synthetic replacement. A representative's job title does not establish that form.
 - Existing full names are not copied as recovered identities. Potential links to unmasked names are flagged for review; unchanged source content can still contain real identities.
@@ -74,11 +110,61 @@ Override paths using `--output-file`, `--links-file`, and `--maps-file`. Paths m
 
 Documents are `needs_review` when any recorded issue remains (including missing NER); otherwise they are `passed_automatic_checks`. Neither state is a human approval or a guarantee of recall. Round-trip verification establishes reversible edits only. `overlap_conflict_entities` counts entities blocked by conflicting spans.
 
+## Large-scale curation and quality filtering
+
+The source collection is much larger than a practical first NER run. The
+curation command selects a deterministic, marker-bearing subset while keeping
+legal diversity across `case_type`, `doc_type`, and `cap_xet_xu`:
+
+```powershell
+python src/curate_court_dataset.py `
+  --input-file datasets/court_documents_local/documents.jsonl `
+  --output-file datasets/court_documents_curated/documents.jsonl `
+  --per-stratum 100 --min-chars 500
+```
+
+The output contains the original text and metadata plus a `curation` audit
+object. Change `--seed` to create a different reproducible sample. The default
+selector requires at least one procedural code, dotted initial, address alias,
+or initial-like marker. Use `--include-no-marker` only when a negative/control
+set is desired.
+
+After NER and reconstruction, score and keep conservative records:
+
+```powershell
+python src/filter_reconstructed_dataset.py `
+  --synthetic-file outputs/synthetic_unanonymized.jsonl `
+  --links-file outputs/entity_links.jsonl `
+  --clean-output outputs/synthetic_unanonymized_clean.jsonl `
+  --report-file outputs/reconstruction_quality.json `
+  --min-score 85 --min-replacements 1
+```
+
+`reconstruction_quality` is a deterministic triage score, not a calibrated
+probability. The default filter requires no review reasons, a successful
+round-trip, and at least one applied replacement. Rejected records are not
+deleted; they remain in the original reconstruction and link-audit files.
+Use `--allow-review` only to create a broader candidate pool for manual review.
+The report includes rejection reasons and selected distributions by case and
+document type, so a high-quality output can still be checked for diversity.
+
 ```bash
 python src/inspect_entity_links.py --source-file datasets/legal_test.jsonl --links-file outputs/entity_links.jsonl --synthetic-file outputs/synthetic_unanonymized.jsonl --doc-id 1000001 --output-file outputs/document_review.html
 ```
 
 The viewer shows original and reconstructed text side by side with highlights, document review reasons, and the entity table. Click a mention or table row to highlight the same entity throughout; hover for evidence. LLM decisions are expandable. Mismatched source hashes are rejected. Old outputs remain readable as legacy outputs but need regeneration to show evidence-v2 metadata.
+
+To inspect a complete demo run, generate a folder containing an index and one page per document:
+
+```bash
+python src/inspect_demo.py \
+  --source-file datasets/demo_court_documents_v2/documents.jsonl \
+  --links-file outputs/entity_links.jsonl \
+  --synthetic-file outputs/synthetic_unanonymized.jsonl \
+  --output-dir outputs/demo_500_html
+```
+
+Open `outputs/demo_500_html/index.html`. The index can be filtered by document ID, case type, document type, quality tier, or review reason; each page shows the highlighted source, synthetic reconstruction, quality, and entity audit.
 
 ## Verification
 

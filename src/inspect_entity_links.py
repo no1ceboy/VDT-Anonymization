@@ -180,6 +180,22 @@ def build_html(doc_id, source_row, audit_row, synthetic_row=None):
     synthetic_text = ""
     if synthetic_row:
         synthetic_text = str(synthetic_row.get("synthetic_markdown", ""))
+    quality = (audit_row.get("reconstruction_quality") or
+               (synthetic_row or {}).get("reconstruction_quality") or {})
+    quality_summary = "n/a"
+    if quality:
+        selected = quality.get('selected')
+        if selected is None:
+            selected = bool(
+                quality.get('eligible') and
+                quality.get('quality_score', 0) >= 85 and
+                not quality.get('reasons')
+            )
+        quality_summary = (
+            f"{quality.get('quality_score', 'n/a')} / "
+            f"{quality.get('quality_tier', 'unassessed')} / "
+            f"{'selected' if selected else 'not selected'}"
+        )
 
     synthetic_section = ""
     if synthetic_text:
@@ -234,6 +250,7 @@ th {{ background: #f6f8fa; position: sticky; top: 0; }}
   Entities: {len(audit_row.get('entities', []))} |
   Mentions: {len(spans)} |
   Marker-based entities: {marker_entities} |
+  Quality: {html.escape(str(quality_summary))} |
   Labels: {html.escape(str(dict(label_counts)))} |
   Overlap segments resolved for display: {conflict_segments}
 </div>
