@@ -129,22 +129,31 @@ def observations(text, ner_record):
         label = str(entity.get('label','')).upper().split('-')[-1]
         label = {'PERSON':'PER', 'LOCATION':'LOC', 'ORGANIZATION':'ORG'}.get(label,label)
         if label in {'PER','LOC','ORG'}:
-            result.append({'start':start,'end':end,'label':label,'score':entity.get('score'),'text':text[start:end]})
+            observation={'start':start,'end':end,'label':label,'score':entity.get('score'),'text':text[start:end]}
+            if label in {'PER','LOC'}:
+                view, repairs=repair_ner_spacing(text,start,end,[observation])
+                observation['normalized_text']=view
+                observation['ocr_spacing_repairs']=repairs
+            result.append(observation)
     return result
 
 
 def repair_ner_spacing(text, start, end, ner):
     """Repair dictionary-supported spacing only in a matching view.
 
-    Offsets and source text remain untouched. The caller excludes the marker
-    from this interval. Repairs cannot cross punctuation or line boundaries.
+    Offsets and source text remain untouched. Complete PER spans may include
+    markers, which are protected. Repairs cannot cross punctuation or lines.
     """
     edits = {}
     for observation in ner:
         left, right = max(start, observation['start']), min(end, observation['end'])
         if left >= right:
             continue
-        vocabulary = FAMILY_NAMES if observation['label']=='PER' else ADDRESS_UNITS
+        vocabulary = FAMILY_NAMES if observation['label']=='PER' else list(ADDRESS_UNITS)
+        if observation['label']=='LOC':
+            vocabulary = list(dict.fromkeys(vocabulary + PROVINCE_NAMES +
+                [name for groups in LOCATION_NAMES.values() for names in groups.values() for name in names] +
+                [name for names in LOCATION_VARIANTS.values() for name in names]))
         fragment = text[left:right]
         for word in vocabulary:
             pattern = r'(?<!\w)' + r'[ \t]*'.join(re.escape(c) for c in word.replace(' ','')) + r'(?!\w)'
@@ -153,6 +162,11 @@ def repair_ner_spacing(text, start, end, ner):
                 if normalize(raw) == normalize(word):
                     continue
                 a, b = left+match.start(), left+match.end()
+                # An isolated capital, dotted initial or procedural code may
+                # be deliberate anonymization; do not absorb it into a word.
+                if any(a < left+m.end() and b > left+m.start()
+                       for m in TOKEN_RE.finditer(fragment)):
+                    continue
                 edits[(a,b)] = {'start':a,'end':b,'original':raw,'normalized':word}
     ordered = sorted(edits.values(),key=lambda e:(e['start'],-e['end']))
     accepted=[]
@@ -165,6 +179,31 @@ def repair_ner_spacing(text, start, end, ner):
     return view, accepted
 
 
+def location_prefix_lookback(text, start):
+    """Match an address unit across at most three preceding whitespace tokens.
+
+    Only whitespace edits are permitted; punctuation/newlines and isolated
+    uppercase markers cannot be crossed. The caller must supply LOC evidence.
+    """
+    before=text[max(0,start-100):start]
+    match=re.search(r'([^\W\d_]+(?:[ \t]+[^\W\d_]+){0,2})[ \t]*$',before)
+    if not match:
+        return None
+    words=list(re.finditer(r'[^\W\d_]+',match.group(1)))
+    for count in range(1,len(words)+1):
+        chosen=words[-count:]
+        a=max(0,start-100)+match.start(1)+chosen[0].start()
+        b=max(0,start-100)+match.start(1)+chosen[-1].end()
+        raw=text[a:b]
+        if any(len(w.group())==1 and w.group().isupper() for w in chosen):
+            continue
+        compact=normalize(''.join(w.group() for w in chosen))
+        options=[unit for unit in ADDRESS_UNITS if unit.replace(' ','')==compact]
+        if len(options)==1:
+            return {'start':a,'end':b,'original':raw,'normalized':options[0]}
+    return None
+
+
 def detect_candidates(text, ner_record):
     ner = observations(text, ner_record)
     candidates = []
@@ -175,6 +214,12 @@ def detect_candidates(text, ner_record):
         after = text[end:end+120]
         overlapping = [n for n in ner if n['start'] <= start and n['end'] >= end]
         before, spacing_repairs = repair_ner_spacing(text,max(0,start-150),start,overlapping)
+        if any(n['label']=='LOC' for n in overlapping):
+            extension=location_prefix_lookback(text,start)
+            if extension and normalize(extension['original'])!=extension['normalized']:
+                before=text[max(0,start-150):extension['start']]+extension['normalized']+text[extension['end']:start]
+                if extension not in spacing_repairs:
+                    spacing_repairs.append(extension)
         m = dict(start=start,end=end,text=text[start:end],marker=token,label='UNKNOWN',
                  score=None,ner_evidence=overlapping,detectors=['lexical'],
                  link_evidence='unconfirmed',encoding_scheme='unconfirmed',link_status='unconfirmed_marker',

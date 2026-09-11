@@ -15,6 +15,36 @@ def prediction(text, surfaces):
 
 
 class CourtConventions(unittest.TestCase):
+    def test_location_prefix_lookback_three_token_limit(self):
+        from src.reconstruction import observations
+        for prefix in ('hu yện', 'h u yện', 'thành ph ố'):
+            text=prefix+' V, tỉnh H.'
+            _,_,audit,_=process_row(0,{'markdown':text},prediction(text,[('V','LOC')]),'markdown')
+            entity=next(e for e in audit['entities'] if e['marker']=='V')
+            self.assertTrue(entity['reconstructable'],prefix)
+            self.assertTrue(entity['mentions'][0]['ocr_spacing_repairs'])
+            self.assertEqual(entity['mentions'][0]['text'],'V')
+        for prefix in ('h u y ện', 'hu, yện', 'hu\nyện', 'H u yện'):
+            text=prefix+' V'
+            _,_,audit,_=process_row(0,{'markdown':text},prediction(text,[('V','LOC')]),'markdown')
+            self.assertFalse(audit['replacements'],prefix)
+        text='Hậu Gi ang'
+        record=observations(text,prediction(text,[(text,'LOC')]))[0]
+        self.assertEqual(record['normalized_text'],'Hậu Giang')
+        self.assertEqual(record['text'],text)
+
+    def test_all_person_observations_receive_spacing_view(self):
+        from src.reconstruction import observations
+        text='Nguy ễn Hùng Trị; Nguy ễn Hùng T; Nguyễn Hùng Trị; N.H.H; NLQ1'
+        surfaces=['Nguy ễn Hùng Trị','Nguy ễn Hùng T','Nguyễn Hùng Trị','N.H.H','NLQ1']
+        records=observations(text,prediction(text,[(s,'PER') for s in surfaces]))
+        self.assertEqual([r['normalized_text'] for r in records],
+                         ['Nguyễn Hùng Trị','Nguyễn Hùng T','Nguyễn Hùng Trị','N.H.H','NLQ1'])
+        for record in records:
+            self.assertEqual(text[record['start']:record['end']],record['text'])
+        self.assertTrue(records[0]['ocr_spacing_repairs'])
+        self.assertFalse(records[2]['ocr_spacing_repairs'])
+
     def test_numbered_codes_and_roundtrip(self):
         text = 'NLQ 1, sinh năm 1953; NLQ2, sinh năm 1983. NLQ1 trình bày. NLC12 làm chứng.'
         _, row, audit, _ = process_row(0, {"id": "test", "markdown": text}, None, 'markdown')
