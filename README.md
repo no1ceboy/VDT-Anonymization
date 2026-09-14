@@ -193,6 +193,29 @@ Tests cover known corruption cases, atomic replacements, independent NER evidenc
 Run commands from the repository root. Existing NER JSONL and notebook commands remain supported.
 The reconstruction and HTML inspector use only Python's standard library. NER dependencies are in `requirements.txt`.
 
+## Production 10k run (Kaggle)
+
+`src/run_kaggle_10k.py` streams the Hugging Face `tmquan/cbba-toaan-gov-vn`
+`documents` split, loads NER once, and stops only after selecting exactly 10,000
+records. A clean record must have score 100, no review reason, a verified
+round-trip, and at least one applied reconstruction. LLM decisions are never
+used to auto-accept training records.
+
+```bash
+python src/run_kaggle_10k.py \
+  --output-dir /kaggle/working/vdt_clean_10k \
+  --target 10000 \
+  --device cuda \
+  --dtype fp16
+```
+
+The runner checkpoints every 100 inferred documents. Reusing the same output
+directory resumes from `progress.json` and appends without duplicating accepted
+document IDs. `clean_10000.jsonl` is the training dataset,
+`clean_10000_maps.jsonl` is its compact audit map, and
+`challenge_rejected.jsonl` is a separate balanced sample of difficult rejects
+for evaluation only. `manifest.json` records selection policy and distributions.
+
 ## Pipeline
 
 1. Read NER and recover publication markers with document rules.

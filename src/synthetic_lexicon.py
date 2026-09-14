@@ -85,6 +85,13 @@ FAMILY_NAMES = [
     "Nguyễn", "Trần", "Lê", "Phạm", "Hoàng", "Huỳnh", "Võ", "Vũ", "Đặng", "Bùi",
     "Phan", "Đoàn", "Đinh", "Dương", "Hồ", "Ngô", "Đỗ", "Tô", "Cao", "Lý", "Lưu",
     "Trương", "Mai", "Mạc", "Hà", "Giang", "Chung", "Chu", "Thái", "Vương", "Lương",
+    # Less frequent but established Vietnamese and ethnic-minority family
+    # names seen in court publications.  Supporting these is safer than
+    # treating them as given-name fragments because prefix_before still
+    # requires a complete capitalized name immediately before a marker.
+    "Bạch", "Chế", "Đàm", "Hạ", "Hứa", "Khổng", "Kiều", "Lại", "Lâm", "Lò",
+    "Mã", "Nghiêm", "Nông", "Quách", "Sầm", "Tạ", "Tăng", "Thạch", "Thân",
+    "Tống", "Tôn", "Triệu", "Từ", "Uông", "Vi", "Giàng",
 ]
 
 FALLBACK_GIVEN_NAMES = {
@@ -107,6 +114,25 @@ NAME_PREFIX_TOKENS = {
     "trúc", "bích", "bạch", "hoài", "thùy", "tuệ", "thái", "khắc", "tú", "tường",
     "huyền", "diệp", "phương", "phượng", "quỳnh", "quyên", "lan", "linh", "loan", "hùng",
 }
+
+# Keep detection and generation vocabularies synchronized.  Previously a
+# valid generated/common token such as ``Hồng`` could terminate prefix
+# parsing (``Vũ Hồng V``), while a real but less frequent family such as
+# ``Đàm`` or ``Lò`` was rejected.  This union does not make arbitrary title-
+# case text a person: the first token must still be in FAMILY_NAMES and the
+# sequence must be contiguous with the anonymization marker.
+NAME_PREFIX_TOKENS.update(name.casefold() for name in FAMILY_NAMES)
+NAME_PREFIX_TOKENS.update(
+    name.casefold()
+    for gender_groups in GIVEN_NAMES.values()
+    for names in gender_groups.values()
+    for name in names
+)
+NAME_PREFIX_TOKENS.update(
+    name.casefold()
+    for names in FALLBACK_GIVEN_NAMES.values()
+    for name in names
+)
 
 # Plausible synthetic place names by administrative unit. These names are
 # intentionally generic and are selected deterministically by marker/index.

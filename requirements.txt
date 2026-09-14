@@ -4,3 +4,4 @@ torch>=2.1
 transformers>=4.37,<5
 tokenizers>=0.15
 safetensors>=0.4
+datasets>=2.19,<5

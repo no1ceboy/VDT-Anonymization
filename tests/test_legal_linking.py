@@ -282,12 +282,45 @@ class CourtConventions(unittest.TestCase):
         self.assertTrue(any(record['parent']==district_record['code'] for record in commune_records))
 
     def test_unsupported_person_name_is_left_unchanged_and_reviewed(self):
-        text='Nguyên đơn: Chị Lò Thị T.'
-        ner=prediction(text,[('Lò Thị T','PER')])
+        text='Nguyên đơn: Chị Smith T.'
+        ner=prediction(text,[('Smith T','PER')])
         _,row,audit,_=process_row(0,{'markdown':text},ner,'markdown')
         self.assertEqual(row['synthetic_markdown'],text)
         self.assertIn('unsupported_name_prefix',audit['review_reasons'])
         self.assertFalse(row['reconstruction_quality']['eligible'])
+
+    def test_less_frequent_vietnamese_family_name_is_supported(self):
+        text='Nguyên đơn: Chị Lò Thị T, sinh năm 1995.'
+        ner=prediction(text,[('Lò Thị T','PER')])
+        _,row,audit,_=process_row(0,{'markdown':text},ner,'markdown')
+        self.assertNotEqual(row['synthetic_markdown'],text)
+        self.assertNotIn('unsupported_name_prefix',audit['review_reasons'])
+
+    def test_given_name_prefix_extends_partial_ner_to_final_marker(self):
+        text='Ông Vũ Hồng V trình bày.'
+        # This reproduces the model boundary from document 1000223: the NER
+        # span ends before the anonymized final token.
+        ner=prediction(text,[('Vũ Hồng','PER')])
+        _,row,audit,_=process_row(0,{'markdown':text},ner,'markdown')
+        self.assertTrue(any(item['original']=='Vũ Hồng V' for item in audit['replacements']))
+        self.assertNotEqual(row['synthetic_markdown'],text)
+        self.assertNotIn('unsupported_name_prefix',audit['review_reasons'])
+
+    def test_dam_family_and_numbered_marker_are_supported(self):
+        text='Bị cáo: Đàm Xuân H1. Anh H1 có mặt.'
+        ner=prediction(text,[('Đàm Xuân H1','PER')])
+        _,row,audit,_=process_row(0,{'markdown':text},ner,'markdown')
+        self.assertNotIn('Đàm Xuân H1',row['synthetic_markdown'])
+        self.assertNotIn('unsupported_name_prefix',audit['review_reasons'])
+
+    def test_production_prefilter_requires_reconstruction_context(self):
+        from src.run_kaggle_10k import feature_profile, primary_challenge
+        hard='Bị cáo: Đàm Xuân H1. Người liên quan NLQ2 ở xã T.'
+        profile=feature_profile(hard)
+        self.assertTrue(profile['relevant'])
+        self.assertEqual(primary_challenge(profile),'procedural_code')
+        heading='NHÂN DANH NƯỚC CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM'
+        self.assertFalse(feature_profile(heading)['relevant'])
 
     def test_ner_spacing_repairs_preserve_source_and_link_aliases(self):
         text='Ông Nguy ễn Hùng T. Ông Nguyễn Hùng T. Tòa án hu yện V, tỉnh H. Huyện V.'
