@@ -35,6 +35,7 @@ REASON_PENALTIES = {
     "numeral_or_alias": 12,
     "road_number_or_alias": 12,
     "overlapping_replacement_spans": 100,
+    "invalid_location_hierarchy": 100,
     "incompatible_name_initial": 20,
 }
 
@@ -54,6 +55,7 @@ HARD_FAIL_REASONS = {
     "llm_decision_requires_review",
     "unconfirmed_marker",
     "overlapping_replacement_spans",
+    "invalid_location_hierarchy",
     "incompatible_name_initial",
 }
 

@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from src.build_synthetic_unanonymized import link_document, process_row, marker_value
+from src.build_challenge_dataset import challenge_categories
 from src.curate_court_dataset import interest_features, stable_rank, stratum
 from src.legal_linking import GeminiResolver
 from src.reconstruction_quality import score_document
@@ -50,6 +51,27 @@ class CourtConventions(unittest.TestCase):
         result = score_document({'audit_stats': {'roundtrip_verified': True, 'replacements': 0}})
         self.assertFalse(result['eligible'])
         self.assertIn('insufficient_replacements', result['reasons'])
+
+    def test_challenge_builder_excludes_clean_and_avoids_identifier_fragments(self):
+        clean = {
+            'original_anonymized_markdown': 'Anh H1 va ma H11 trong hop dong.',
+            'reconstruction_quality': {
+                'eligible': True, 'quality_score': 100, 'reasons': [],
+            },
+        }
+        self.assertEqual(challenge_categories(clean, {}), [])
+        rejected = {
+            'original_anonymized_markdown': 'Ho so H1, H2, B1, B2.',
+            'reconstruction_quality': {
+                'eligible': False, 'quality_score': 0,
+                'reasons': ['ambiguous_identity'],
+            },
+        }
+        categories = challenge_categories(rejected, {})
+        self.assertEqual(
+            categories,
+            ['marker_H1', 'marker_H2', 'marker_B1', 'marker_B2', 'ambiguous_identity'],
+        )
 
     def test_ner_inference_error_is_not_treated_as_empty_predictions(self):
         _, _, audit, _ = process_row(
@@ -155,6 +177,24 @@ class CourtConventions(unittest.TestCase):
         self.assertEqual(codes, {'H12', 'H13'})
         self.assertIsNone(marker_value('A01'))
 
+    def test_numbered_multi_letter_markers_and_unique_anchor_propagation(self):
+        text = (
+            'Bà Nguyễn Thị Thu Th1. Theo biên bản, Th1 có mặt. '
+            'Bà Nguyễn Thị Trang Hồng L10. Theo biên bản, L10 ký.'
+        )
+        ner = prediction(text, [('Nguyễn Thị Thu Th1', 'PER'), ('Nguyễn Thị Trang Hồng L10', 'PER')])
+        _, row, audit, _ = process_row(0, {'id': 'numbered-markers', 'markdown': text}, ner, 'markdown')
+        by_marker = {entity['marker']: entity for entity in audit['entities']}
+        self.assertEqual(marker_value('Th10'), 'Th10')
+        self.assertEqual(marker_value('L10'), 'L10')
+        self.assertIsNone(marker_value('L01'))
+        for marker in ('Th1', 'L10'):
+            self.assertTrue(by_marker[marker]['reconstructable'])
+            self.assertEqual(len(by_marker[marker]['mentions']), 2)
+            self.assertTrue(all(m['link_status'] != 'unconfirmed_marker' for m in by_marker[marker]['mentions']))
+        self.assertNotIn('Th1', row['synthetic_markdown'])
+        self.assertNotIn('L10', row['synthetic_markdown'])
+
     def test_declared_arbitrary_alias(self):
         text = '- Bị đơn: Ông A.\nÔng A trình bày.'
         _, entities, _ = link_document('test', text, None)
@@ -226,6 +266,28 @@ class CourtConventions(unittest.TestCase):
         self.assertEqual(row['synthetic_markdown'].count('làng '),2)
         self.assertFalse(villages[0]['reconstructable'])
         self.assertIn('conflicting_location_parents',villages[0]['review_reasons'])
+
+    def test_masked_admin_locations_share_one_valid_parent_path(self):
+        from src.location_gazetteer import record_for_name, records
+        text='Trú tại: xóm T, xã H, huyện K, tỉnh Hòa Bình.'
+        _,row,audit,_=process_row(0,{'markdown':text},None,'markdown')
+        district=next(e for e in audit['entities'] if e['role']=='district')
+        commune=next(e for e in audit['entities'] if e['role']=='commune')
+        province=record_for_name('tỉnh','Hòa Bình')
+        district_record=record_for_name('huyện',district['synthetic_value'])
+        commune_records=[record for record in records()
+                         if record['unit']=='xã' and record['name']==commune['synthetic_value']]
+        self.assertNotIn('invalid_location_hierarchy',audit['review_reasons'])
+        self.assertEqual(district_record['parent'],province['code'])
+        self.assertTrue(any(record['parent']==district_record['code'] for record in commune_records))
+
+    def test_unsupported_person_name_is_left_unchanged_and_reviewed(self):
+        text='Nguyên đơn: Chị Lò Thị T.'
+        ner=prediction(text,[('Lò Thị T','PER')])
+        _,row,audit,_=process_row(0,{'markdown':text},ner,'markdown')
+        self.assertEqual(row['synthetic_markdown'],text)
+        self.assertIn('unsupported_name_prefix',audit['review_reasons'])
+        self.assertFalse(row['reconstruction_quality']['eligible'])
 
     def test_ner_spacing_repairs_preserve_source_and_link_aliases(self):
         text='Ông Nguy ễn Hùng T. Ông Nguyễn Hùng T. Tòa án hu yện V, tỉnh H. Huyện V.'

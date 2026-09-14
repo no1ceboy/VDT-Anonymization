@@ -30,7 +30,7 @@ local-shard subset, not a verified complete/current Hugging Face snapshot.
 
 The pipeline generates synthetic replacements for masked references in published court documents. It does not recover hidden identities. Run commands from the repository root; existing notebook shell commands remain compatible.
 
-## Design: evidence-v2
+## Design: evidence-v4
 
 | Stage | Responsibility | Evidence required |
 |---|---|---|
@@ -68,7 +68,7 @@ Reconstruction uses the bundled [dvhcvn vocabulary](resources/dvhcvn/SOURCE.md):
 
 - Administrative replacements use real names of the exact unit (`huyện`, `quận`, `xã`, `phường`, etc.), excluding purely numeric names for alphabetic aliases. Hamlet/street names retain synthetic fallback pools. Alias initials are not enforced for locations.
 - Detection still prioritizes explicit address grammar. The vocabulary recognizes complete adjacent parent names, avoiding truncated names and arbitrary prose. Dictionary-supported spacing repair operates within NER spans, protects anonymization markers and leaves source offsets/text untouched. It is not a standalone full-document location NER replacement.
-- Repeated unit-plus-alias mentions keep the existing document-level linking; explicit conflicting parents trigger review. Names are sampled independently: a generated address is **not guaranteed to be a valid administrative hierarchy**. The snapshot is historical, not a current-boundary database.
+- Repeated unit-plus-alias mentions keep the existing document-level linking; explicit conflicting parents trigger review. Masked province/district/commune components are sampled from one valid parent-child path in the bundled gazetteer. Hamlet and street aliases use synthetic fallback pools because the snapshot does not enumerate every local feature. If no valid administrative path exists, `invalid_location_hierarchy` blocks automatic selection. The snapshot is historical, not a current-boundary database.
 - Unsupported foreign name prefixes, fragmented OCR names, possible unmasked aliases, incompatible name pools and conflicting evidence remain unresolved.
 - Procedural organizations need a complete organization form before synthetic replacement. A representative's job title does not establish that form.
 - Existing full names are not copied as recovered identities. Potential links to unmasked names are flagged for review; unchanged source content can still contain real identities.
@@ -152,19 +152,36 @@ document type, so a high-quality output can still be checked for diversity.
 python src/inspect_entity_links.py --source-file datasets/legal_test.jsonl --links-file outputs/entity_links.jsonl --synthetic-file outputs/synthetic_unanonymized.jsonl --doc-id 1000001 --output-file outputs/document_review.html
 ```
 
-The viewer shows original and reconstructed text side by side with highlights, document review reasons, and the entity table. Click a mention or table row to highlight the same entity throughout; hover for evidence. LLM decisions are expandable. Mismatched source hashes are rejected. Old outputs remain readable as legacy outputs but need regeneration to show evidence-v2 metadata.
+The viewer shows original and reconstructed text side by side with highlights, document review reasons, and the entity table. Click a mention or table row to highlight the same entity throughout; hover for evidence. LLM decisions are expandable. Mismatched source hashes are rejected. Old outputs remain readable as legacy outputs but need regeneration to show evidence-v4 metadata.
 
 To inspect a complete demo run, generate a folder containing an index and one page per document:
 
 ```bash
 python src/inspect_demo.py \
   --source-file datasets/demo_court_documents_v2/documents.jsonl \
-  --links-file outputs/entity_links.jsonl \
-  --synthetic-file outputs/synthetic_unanonymized.jsonl \
-  --output-dir outputs/demo_500_html
+  --links-file outputs/demo_100_entity_links.jsonl \
+  --synthetic-file outputs/demo_100_synthetic_unanonymized.jsonl \
+  --output-dir outputs/demo_100_html \
+  --limit 100
 ```
 
-Open `outputs/demo_500_html/index.html`. The index can be filtered by document ID, case type, document type, quality tier, or review reason; each page shows the highlighted source, synthetic reconstruction, quality, and entity audit.
+Open `outputs/demo_100_html/index.html`. The index can be filtered by document ID, case type, document type, quality tier, or review reason; each page shows the highlighted source, synthetic reconstruction, quality, and entity audit.
+
+Keep difficult cases separate from training-clean records:
+
+```powershell
+python src/build_challenge_dataset.py `
+  --synthetic-file outputs/demo_100_synthetic_unanonymized.jsonl `
+  --links-file outputs/demo_100_entity_links.jsonl `
+  --output-file outputs/demo_100_synthetic_unanonymized_challenge.jsonl `
+  --report-file outputs/demo_100_challenge_report.json `
+  --max-per-category 5
+```
+
+The challenge builder excludes clean records and guarantees coverage of
+available `H1`, `H2`, `B1`, and `B2` marker families before adding representative
+failure reasons. Challenge records are for evaluation and debugging, never for
+the clean training set.
 
 ## Verification
 

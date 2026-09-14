@@ -8,18 +8,19 @@ import re
 from collections import defaultdict
 
 try:
-    from .location_gazetteer import names as admin_names, parent_components, spacing_repairs as admin_spacing_repairs, UNITS as ADMIN_UNITS
+    from .location_gazetteer import admin_path_candidates, names as admin_names, parent_components, record_for_name, spacing_repairs as admin_spacing_repairs, UNITS as ADMIN_UNITS
     from .synthetic_lexicon import FAMILY_NAMES, GIVEN_NAMES, NAME_PREFIX_TOKENS, LOCATION_NAMES, SYNTHETIC_ORGANIZATION_NAMES
 except ImportError:
-    from location_gazetteer import names as admin_names, parent_components, spacing_repairs as admin_spacing_repairs, UNITS as ADMIN_UNITS
+    from location_gazetteer import admin_path_candidates, names as admin_names, parent_components, record_for_name, spacing_repairs as admin_spacing_repairs, UNITS as ADMIN_UNITS
     from synthetic_lexicon import FAMILY_NAMES, GIVEN_NAMES, NAME_PREFIX_TOKENS, LOCATION_NAMES, SYNTHETIC_ORGANIZATION_NAMES
 
-VERSION = "evidence-v2"
+VERSION = "evidence-v4"
 CODE_RE = re.compile(r"(?:NLQ|NLC)\s*\d+")
 DOTTED = r"(?:[A-ZĐ]\.){1,5}[A-ZĐ](?:[1-9]\d*)?"
+MULTI_INITIAL = r"(?:Th|Ph|Tr|Ng|Ch|Kh|Nh)(?:[ \t]*[1-9]\d*)?"
 TOKEN_RE = re.compile(
     rf"(?<![A-ZĐ\d_])(?:NLQ\s*\d+|NLC\s*\d+|{DOTTED}|"
-    r"[IVX]{2,6}|(?:Th|Ph|Tr|Ng|Ch|Kh|Nh)|[A-ZĐ](?:[ \t]*[1-9]\d*)?)(?!\w)"
+    rf"[IVX]{{2,6}}|{MULTI_INITIAL}|[A-ZĐ](?:[ \t]*[1-9]\d*)?)(?!\w)"
 )
 PERSON_TITLE = re.compile(r"(?<!\w)(ông|bà|anh|chị|cháu|cô|chú|bác|em)\s*$", re.I)
 DECLARATION = re.compile(r"(nguyên đơn|bị đơn|bị cáo|bị hại|người làm chứng|người khởi kiện|người bị kiện)\s*:\s*(?:(?:ông|bà|anh|chị|cháu)\s*)?$", re.I)
@@ -34,6 +35,7 @@ ADDRESS_UNITS = {
     "thành phố": "city", "tỉnh": "province", "đường": "street", "lộ": "street",
     "quốc lộ": "road_number", "ngõ": "street", "hẻm": "street",
 }
+ADDRESS_UNITS.setdefault("xóm", "hamlet")
 UNIT_PATTERN = "|".join(re.escape(s) for s in sorted(ADDRESS_UNITS, key=len, reverse=True))
 ADDRESS_PREFIX = re.compile(rf"(?<!\w)({UNIT_PATTERN})\s*$", re.I)
 NONENTITY_PREFIX = re.compile(r"(?:loại|mã|ký hiệu|biển số|số hiệu|điểm|hạng|nhóm)\s*$", re.I)
@@ -73,7 +75,7 @@ def normalize(value):
 
 def marker_value(value):
     value = re.sub(r"\s+", "", str(value or ""))
-    return value if re.fullmatch(rf"(?:NLQ|NLC)\d+|{DOTTED}|[A-ZĐ](?:[1-9]\d*)?|Th|Ph|Tr|Ng|Ch|Kh|Nh", value) else None
+    return value if re.fullmatch(rf"(?:NLQ|NLC)\d+|{DOTTED}|{MULTI_INITIAL}|[A-ZĐ](?:[1-9]\d*)?", value) else None
 
 
 def stable_slot(doc_id, key):
@@ -292,7 +294,7 @@ def detect_candidates(text, ner_record):
                     m['ocr_spacing_repairs']=repairs
                 surface=re.sub(r'^(?:ông|bà|anh|chị|cháu)\s+','',surface,flags=re.I)
                 if surface:
-                    m.update(start=best['start'],text=text[best['start']:end],name_prefix=surface,
+                    m.update(start=best['start'],text=text[best['start']:end],label='PER',role='person',name_prefix=surface,
                              person_anchor=normalize(surface),encoding_scheme='name_initial')
                     # A partially masked NER span is not automatically an
                     # unsupported name.  Recognized Vietnamese family names
@@ -348,6 +350,40 @@ def link_candidates(text, mentions, resolver=None, doc_id=''):
                 issue(m,'unknown_participant_type' if not types else 'conflicting_participant_types')
     if resolver:
         resolver.resolve_types(doc_id,text,mentions)
+
+    # A numbered marker can be introduced once as a complete person name and
+    # then appear alone in enumerations, delegation clauses, or later
+    # references.  The standalone occurrence is not independently typeable,
+    # but a unique person anchor for the exact marker is strong document-local
+    # evidence.  Propagate only when that marker has no competing typed label;
+    # this keeps L1 distinct from L2/L10 and prevents a person marker from
+    # absorbing an address, organization, or identifier with the same text.
+    typed_labels = defaultdict(set)
+    for mention in mentions:
+        if mention.get('link_status') == 'rejected_nonentity':
+            continue
+        if mention.get('label') != 'UNKNOWN':
+            typed_labels[mention['marker']].add(mention['label'])
+    for mention in mentions:
+        if mention.get('link_status') != 'unconfirmed_marker':
+            continue
+        if not any(char.isdigit() for char in mention['marker']):
+            continue
+        choices = registry[mention['marker']]
+        if len(choices) != 1 or typed_labels[mention['marker']] - {'PER'}:
+            continue
+        anchor = next(iter(choices))
+        mention.update(
+            label='PER',
+            role='person',
+            person_anchor=anchor,
+            encoding_scheme='numbered_initial' if any(c.isdigit() for c in mention['marker']) else 'name_initial',
+            link_status='linked_by_unique_anchor',
+            link_evidence='unique_marker_anchor',
+        )
+        mention['review_reasons'] = [
+            reason for reason in mention['review_reasons'] if reason != 'unconfirmed_marker'
+        ]
     declarations=defaultdict(list)
     for m in mentions:
         if m['label']=='PER' and m.get('declaration') and not m.get('person_anchor'):
@@ -415,7 +451,101 @@ def person_value(doc_id,key,group,used):
     return None,'synthetic_name_pool_exhausted'
 
 
-def replacement_value(doc_id,key,group,used):
+ADMIN_LOCATION_ROLES={'province','district','commune'}
+
+
+def split_address_component(component):
+    component=normalize(component)
+    for unit in sorted(ADDRESS_UNITS,key=len,reverse=True):
+        prefix=normalize(unit)+' '
+        if component.startswith(prefix):
+            return unit,component[len(prefix):].strip()
+    return None,None
+
+
+def is_masked_address_value(value):
+    return marker_value(str(value or '').upper()) is not None
+
+
+def plan_admin_location_values(doc_id, groups):
+    """Plan masked administrative names from one valid hierarchy per scope."""
+    location_groups=[
+        (key,group) for key,group in groups.items()
+        if group and group[0]['label']=='LOC'
+        and group[0].get('role') in ADMIN_LOCATION_ROLES
+    ]
+    if not location_groups:
+        return {}
+
+    signatures=[]
+    for key,group in location_groups:
+        masked=set()
+        anchors={}
+        required=defaultdict(set)
+        first=group[0]
+        required[first['role']].add(first.get('address_unit'))
+        masked.add((first['role'],normalize(first.get('marker'))))
+        for mention in group:
+            for component in mention.get('address_parents',[]):
+                unit,value=split_address_component(component)
+                if not unit:
+                    continue
+                record=record_for_name(unit,value)
+                if record:
+                    anchors[record['code']]=record
+                    continue
+                role=ADDRESS_UNITS.get(unit)
+                if role in ADMIN_LOCATION_ROLES and is_masked_address_value(value):
+                    masked.add((role,normalize(value)))
+        signatures.append((key,group,masked,anchors,required))
+
+    # Connect entities that occur in the same masked address chain. Visible
+    # parents constrain a chain but do not accidentally merge two unrelated
+    # addresses in the same province.
+    components=[]
+    by_signature={item[0]:item for item in signatures}
+    unvisited=set(by_signature)
+    while unvisited:
+        root=next(iter(unvisited))
+        pending={root}; changed=True
+        while changed:
+            changed=False
+            for other in tuple(unvisited-pending):
+                other_signature=by_signature[other][2]
+                if any(by_signature[key][2] & other_signature for key in pending):
+                    pending.add(other)
+                    changed=True
+        components.append(pending)
+        unvisited-=pending
+
+    by_key={item[0]:item for item in signatures}
+    planned={}
+    for component in components:
+        anchors={}
+        required=defaultdict(set)
+        for key in component:
+            _,group,_,group_anchors,group_required=by_key[key]
+            anchors.update(group_anchors)
+            for role,units in group_required.items():
+                required[role].update(units)
+        required_tuple=tuple(sorted((role,tuple(sorted(units))) for role,units in required.items()))
+        paths=admin_path_candidates(tuple(sorted(anchors)),required_tuple)
+        if not paths:
+            for key in component:
+                planned[key]=(None,'invalid_location_hierarchy')
+            continue
+        seed=tuple(sorted(str(key) for key in component))
+        path=dict(paths[stable_slot(doc_id,('location_path',seed))%len(paths)])
+        for key in component:
+            first=by_key[key][1][0]
+            role=first.get('role')
+            record=path.get(role)
+            if record:
+                planned[key]=(record['name'],None)
+    return planned
+
+
+def replacement_value(doc_id,key,group,used,planned_locations=None):
     first=group[0]; label=first['label']; role=first['role']
     hard={r for m in group for r in m['review_reasons'] if r!='llm_decision_requires_review'}
     if hard:return None,sorted(hard)[0]
@@ -427,6 +557,8 @@ def replacement_value(doc_id,key,group,used):
             return None,'organization_code_needs_full_form'
         pool=SYNTHETIC_ORGANIZATION_NAMES
     elif label=='LOC':
+        if planned_locations is not None and key in planned_locations:
+            return planned_locations[key]
         unit=role if role in LOCATION_NAMES else 'generic'
         pool=list(dict.fromkeys(s for values in LOCATION_NAMES[unit].values() for s in values))
         if first.get('address_unit') in ADMIN_UNITS:
@@ -467,6 +599,7 @@ def build_entities(doc_id,text,mentions,ner):
     entities=[]; planned=[]; used=set()
     # Avoid generating an identity already present in the source.
     used.update(n['text'] for n in ner if n['label']=='PER')
+    planned_locations=plan_admin_location_values(doc_id,groups)
     for index,(key,group) in enumerate(sorted(groups.items(),key=lambda item:min(m['start'] for m in item[1])),1):
         group.sort(key=lambda m:m['start']); first=group[0]
         if first['label']=='LOC' and first.get('address_unit'):
@@ -498,7 +631,7 @@ def build_entities(doc_id,text,mentions,ner):
                     and n['text'].split()[-1].startswith(initial)):
                 for m in group:issue(m,'possible_unmasked_alias')
                 break
-        value,reason=replacement_value(doc_id,str(key),group,used)
+        value,reason=replacement_value(doc_id,key,group,used,planned_locations)
         if reason:
             for m in group:issue(m,reason)
         eid=f"{first['label']}_{index:04d}"

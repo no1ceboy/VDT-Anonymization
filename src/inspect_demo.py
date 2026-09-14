@@ -18,15 +18,17 @@ except ImportError:
 DEFAULT_SOURCE = "datasets/demo_court_documents_v2/documents.jsonl"
 DEFAULT_LINKS = "outputs/entity_links.jsonl"
 DEFAULT_SYNTHETIC = "outputs/synthetic_unanonymized.jsonl"
-DEFAULT_OUTPUT = "outputs/demo_500_html"
+DEFAULT_OUTPUT = "outputs/demo_100_html"
 
 
-def load_jsonl(path, id_field=None):
+def load_jsonl(path, id_field=None, limit=0):
     records = {}
     with open(path, "r", encoding="utf-8-sig") as handle:
         for row_number, line in enumerate(handle):
             if not line.strip():
                 continue
+            if limit and len(records) >= limit:
+                break
             row = json.loads(line)
             key = str(row.get(id_field)) if id_field else document_id(row, row_number)
             if key in records:
@@ -166,7 +168,7 @@ def main():
     if args.limit < 0:
         parser.error("--limit cannot be negative")
 
-    source_rows = load_jsonl(args.source_file)
+    source_rows = load_jsonl(args.source_file, limit=args.limit)
     audits = load_jsonl(args.links_file, id_field="doc_id")
     synthetic_rows = load_jsonl(args.synthetic_file)
     rows = summary_rows(source_rows, audits, synthetic_rows)
