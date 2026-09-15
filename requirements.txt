@@ -5,3 +5,4 @@ transformers>=4.37,<5
 tokenizers>=0.15
 safetensors>=0.4
 datasets>=2.19,<5
+tensorboard>=2.14

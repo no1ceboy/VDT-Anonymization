@@ -218,6 +218,68 @@ document IDs. `clean_10000.jsonl` is the training dataset,
 `challenge_rejected.jsonl` is a separate balanced sample of difficult rejects
 for evaluation only. `manifest.json` records selection policy and distributions.
 
+## Entity-linking experiment
+
+Create deterministic, document-disjoint train/validation/test splits from a
+clean dataset and its aligned compact maps:
+
+```powershell
+python src/entity_linking_data.py `
+  --clean-input outputs/kaggle_clean_10k/vdt_clean_10k/filtered_v1/clean_filtered.jsonl `
+  --maps-input outputs/kaggle_clean_10k/vdt_clean_10k/filtered_v1/clean_filtered_maps.jsonl `
+  --output-dir outputs/entity_linking_v1
+```
+
+The builder writes the original documents, aligned maps, and bounded mention
+pairs under separate `documents`, `maps`, and `pairs` directories. Splitting is
+by complete document and stratified by category, court instance, and primary
+challenge. Positive pair labels mean the existing rule linker assigned both
+source spans the same entity ID; negatives use different within-document IDs,
+with same-label and same-marker-family conflicts selected first. These are weak
+labels, not independently reviewed ground truth. Pair inputs include only the
+original anonymized context and never the synthetic replacement value.
+
+Measure rule agreement on the held-out test pairs:
+
+```powershell
+python src/evaluate_entity_linking_baseline.py `
+  --pairs outputs/entity_linking_v1/pairs/test.jsonl `
+  --output outputs/entity_linking_v1/baseline_test.json
+```
+
+On the training workstation, install `requirements.txt` and fine-tune the shared
+Vietnamese encoder plus pair MLP:
+
+```powershell
+python src/train_entity_linker.py `
+  --train-pairs outputs/entity_linking_v1/pairs/train.jsonl `
+  --validation-pairs outputs/entity_linking_v1/pairs/validation.jsonl `
+  --test-pairs outputs/entity_linking_v1/pairs/test.jsonl `
+  --output-dir outputs/entity_linker_model `
+  --model-name NlpHUST/ner-vietnamese-electra-base `
+  --feature-set context --epochs 3 --batch-size 16 --fp16
+```
+
+`--model-name` may instead point to an already downloaded local model directory
+for an offline company machine. The trainer writes an interruption-safe
+`last_checkpoint.pt` after every epoch; resume with
+`--resume outputs/entity_linker_model/last_checkpoint.pt`. Metrics are also
+logged to TensorBoard:
+
+```powershell
+tensorboard --logdir outputs/entity_linker_model/tensorboard
+```
+
+TensorBoard writes local event files only; this pipeline does not configure an
+external experiment-tracking service or upload company data.
+
+The validation split selects the decision threshold; the test split is read
+only for final metrics. Keep the rule baseline result labeled as weak-label
+agreement because the training labels themselves originate from that linker.
+The default `context` feature set deliberately omits direct marker-equality
+flags, making comparison with the exact-marker rule less circular. Use `all`
+only for a deployment-oriented hybrid model after measuring that comparison.
+
 ## Pipeline
 
 1. Read NER and recover publication markers with document rules.
