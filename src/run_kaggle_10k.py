@@ -149,9 +149,12 @@ def feature_profile(text: str) -> dict:
 
 def primary_challenge(features: dict) -> str:
     for name in (
+        # Prefer rare/high-value evidence when a document also contains the
+        # routine masked address found in most judgments.  The v1 ordering
+        # mislabeled multi-challenge records as address-primary.
         "alias_language", "numbered_multi", "dotted_initial", "procedural_code",
-        "address_marker", "organization_marker", "numbered_marker",
-        "full_name_marker", "person_context",
+        "organization_marker", "numbered_marker", "full_name_marker",
+        "address_marker", "person_context",
     ):
         if features.get(name):
             return name
