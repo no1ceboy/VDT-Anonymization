@@ -220,6 +220,9 @@ for evaluation only. `manifest.json` records selection policy and distributions.
 
 ## Entity-linking experiment
 
+For a copy-and-run Windows workstation setup, use
+[`TRAIN_ENTITY_LINKER.md`](TRAIN_ENTITY_LINKER.md).
+
 Create deterministic, document-disjoint train/validation/test splits from a
 clean dataset and its aligned compact maps:
 
