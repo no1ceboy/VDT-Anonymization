@@ -216,6 +216,30 @@ class CourtConventions(unittest.TestCase):
         _, row, _, _ = process_row(0, {'markdown': repeated}, ner, 'markdown')
         self.assertNotIn('large_numeric_suffix_requires_repetition', row['review_reasons'])
 
+    def test_legacy_numeric_postfilter_rejects_collision_but_keeps_repeated_ordinal(self):
+        from src.filter_v1_numeric_collisions import semantic_rejection_reasons
+        source='Hoàn trả chị Nguyễn Thị H 150.000 đồng.'
+        row={'original_anonymized_markdown':source}
+        start=source.index('Nguyễn')
+        end=source.index('.')
+        bad_map={
+            'entities':[{'entity_id':'PER_1','label':'PER','marker':'H150'}],
+            'replacements':[{'entity_id':'PER_1','start':start,'end':end,'original':source[start:end]}],
+        }
+        self.assertIn('numeric_amount_boundary_collision',semantic_rejection_reasons(row,bad_map))
+
+        source='Bị cáo Nguyễn Văn H150. Bị cáo H150 khai nhận.'
+        first=source.index('Nguyễn'); first_end=source.index('.',first)
+        second=source.index('H150',first_end); second_end=second+4
+        good_map={
+            'entities':[{'entity_id':'PER_1','label':'PER','marker':'H150'}],
+            'replacements':[
+                {'entity_id':'PER_1','start':first,'end':first_end,'original':source[first:first_end]},
+                {'entity_id':'PER_1','start':second,'end':second_end,'original':source[second:second_end]},
+            ],
+        }
+        self.assertEqual(semantic_rejection_reasons({'original_anonymized_markdown':source},good_map),[])
+
     def test_numbered_multi_letter_markers_and_unique_anchor_propagation(self):
         text = (
             'Bà Nguyễn Thị Thu Th1. Theo biên bản, Th1 có mặt. '
