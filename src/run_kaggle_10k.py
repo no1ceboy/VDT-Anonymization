@@ -9,6 +9,7 @@ append-only or atomically replaced, making a graceful Kaggle restart safe.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import hashlib
 import json
 import math
@@ -45,13 +46,14 @@ except ImportError:
     from synthetic_lexicon import FAMILY_NAMES
 
 
-RUN_VERSION = "kaggle-clean-10k-v1"
+RUN_VERSION = "kaggle-clean-10k-v2"
 DEFAULT_DATASET = "tmquan/cbba-toaan-gov-vn"
 DEFAULT_CONFIG = "documents"
 
 LETTER = r"[A-ZÀ-ỴĐ]"
 WORD = rf"{LETTER}[^\W\d_]*"
-MARKER = rf"(?:NLQ\s*\d+|NLC\s*\d+|(?:{LETTER}\.){{1,5}}{LETTER}(?:[1-9]\d*)?|(?:Th|Ph|Tr|Ng|Ch|Kh|Nh)\s*[1-9]\d*|{LETTER}\s*[1-9]\d*|{LETTER})"
+ORDINAL = r"[1-9]\d*(?![.,]\d{3})"
+MARKER = rf"(?:NLQ\s*\d+|NLC\s*\d+|(?:{LETTER}\.){{1,5}}{LETTER}(?:{ORDINAL})?|(?:Th|Ph|Tr|Ng|Ch|Kh|Nh)\s*{ORDINAL}|{LETTER}\s*{ORDINAL}|{LETTER})"
 FAMILY = "|".join(re.escape(name) for name in sorted(FAMILY_NAMES, key=len, reverse=True))
 
 FULL_NAME_MARKER_RE = re.compile(
@@ -259,37 +261,51 @@ def compact_map(doc_id: str, audit: dict) -> dict:
 
 def load_existing(path: Path):
     ids = set()
+    source_hashes = set()
     categories = Counter()
     instances = Counter()
     challenges = Counter()
     if not path.exists():
-        return ids, categories, instances, challenges
+        return ids, source_hashes, categories, instances, challenges
     with path.open("r", encoding="utf-8-sig") as handle:
         for line in handle:
             if not line.strip():
                 continue
             row = json.loads(line)
             ids.add(document_id(row, len(ids)))
+            source = row.get("original_anonymized_markdown")
+            if isinstance(source, str):
+                source_hashes.add(hashlib.sha256(source.encode()).hexdigest())
             categories[category_of(row)] += 1
             instances[instance_of(row)] += 1
             challenges[(row.get("curation") or {}).get("primary_challenge", "simple")] += 1
-    return ids, categories, instances, challenges
+    return ids, source_hashes, categories, instances, challenges
 
 
 def selection_allowed(category: str, challenge: str, accepted: int, target: int,
                       category_counts: Counter, challenge_counts: Counter) -> bool:
-    """Soft caps prevent one common case type or easy pattern dominating."""
-    # Caps are deliberately soft near the end: once 90% is collected, filling
-    # the exact target is more useful than stalling over a missing rare stratum.
-    if accepted >= math.floor(target * 0.90):
-        return True
-    category_cap = max(50, math.ceil(target * 0.32))
-    simple_cap = max(50, math.ceil(target * 0.38))
+    """Hard caps prevent one common category or address pattern dominating."""
+    category_cap = max(1, math.ceil(target * 0.35))
+    unknown_category_cap = max(1, math.ceil(target * 0.25))
+    address_cap = max(1, math.ceil(target * 0.60))
     if category_counts[category] >= category_cap:
         return False
-    if challenge in {"person_context", "full_name_marker", "simple"} and challenge_counts[challenge] >= simple_cap:
+    if category == "Unknown" and category_counts[category] >= unknown_category_cap:
+        return False
+    if challenge == "address_marker" and challenge_counts[challenge] >= address_cap:
         return False
     return True
+
+
+def has_future_issued_date(row: dict, today: dt.date | None = None) -> bool:
+    value = str(row.get("issued_date") or "").strip()
+    if not value:
+        return False
+    try:
+        issued = dt.date.fromisoformat(value[:10])
+    except ValueError:
+        return False
+    return issued > (today or dt.date.today())
 
 
 def make_report(args, counters, category_counts, instance_counts, challenge_counts,
@@ -309,9 +325,11 @@ def make_report(args, counters, category_counts, instance_counts, challenge_coun
             "minimum_replacements": 1,
             "min_chars": args.min_chars,
             "max_chars": args.max_chars,
-            "category_soft_cap_fraction": 0.32,
-            "simple_feature_soft_cap_fraction": 0.38,
-            "soft_caps_relaxed_after_fraction": 0.90,
+            "category_hard_cap_fraction": 0.35,
+            "unknown_category_hard_cap_fraction": 0.25,
+            "address_primary_feature_hard_cap_fraction": 0.60,
+            "deduplicate_source_sha256": True,
+            "reject_future_issued_date": True,
             "llm_auto_acceptance": False,
         },
         "counts": dict(sorted(counters.items())),
@@ -367,7 +385,7 @@ def main() -> int:
     progress_path = output_dir / "progress.json"
     report_path = output_dir / "manifest.json"
 
-    accepted_ids, category_counts, instance_counts, challenge_counts = load_existing(clean_path)
+    accepted_ids, accepted_hashes, category_counts, instance_counts, challenge_counts = load_existing(clean_path)
     counters = Counter(accepted=len(accepted_ids))
     source_resume = 0
     if progress_path.exists():
@@ -442,6 +460,9 @@ def main() -> int:
                 break
 
             row = dict(raw_row)
+            if has_future_issued_date(row):
+                counters["future_issued_date"] += 1
+                continue
             text = row.get("markdown")
             if not isinstance(text, str) or len(text.strip()) < args.min_chars:
                 counters["too_short_or_missing"] += 1
@@ -452,6 +473,10 @@ def main() -> int:
             doc_id = document_id(row, source_seen - 1)
             if doc_id in accepted_ids:
                 counters["already_accepted"] += 1
+                continue
+            source_hash = hashlib.sha256(text.encode()).hexdigest()
+            if source_hash in accepted_hashes:
+                counters["duplicate_source_text"] += 1
                 continue
 
             features = feature_profile(text)
@@ -498,6 +523,7 @@ def main() -> int:
                 append_jsonl(clean_handle, clean_row)
                 append_jsonl(maps_handle, compact_map(doc_id, audit))
                 accepted_ids.add(doc_id)
+                accepted_hashes.add(source_hash)
                 category_counts[category] += 1
                 instance_counts[instance] += 1
                 challenge_counts[challenge] += 1

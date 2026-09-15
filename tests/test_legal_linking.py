@@ -177,6 +177,45 @@ class CourtConventions(unittest.TestCase):
         self.assertEqual(codes, {'H12', 'H13'})
         self.assertIsNone(marker_value('A01'))
 
+    def test_money_after_name_is_not_absorbed_into_marker(self):
+        text = 'Hoàn trả cho chị Nguyễn Thị H 150.000 đồng. Chị H đã nhận.'
+        ner = prediction(text, [('Nguyễn Thị H', 'PER'), ('H', 'PER')])
+        _, row, audit, _ = process_row(0, {'markdown': text}, ner, 'markdown')
+        self.assertIn('150.000 đồng', row['synthetic_markdown'])
+        self.assertFalse(any(entity.get('marker') == 'H150' for entity in audit['entities']))
+        self.assertTrue(any(rep['original'] == 'Nguyễn Thị H' for rep in audit['replacements']))
+        self.assertNotIn('large_numeric_suffix_requires_repetition', audit['review_reasons'])
+
+    def test_money_after_standalone_alias_is_not_absorbed(self):
+        text = 'Bà A cho bà B vay. Bà A 200.000.000đ, bà B xác nhận.'
+        _, row, audit, _ = process_row(0, {'markdown': text}, {'entities': []}, 'markdown')
+        self.assertIn('200.000.000đ', row['synthetic_markdown'])
+        self.assertFalse(any(entity.get('marker') == 'A200' for entity in audit['entities']))
+
+    def test_document_and_compound_address_numbers_are_not_markers(self):
+        text = (
+            'Giấy chứng nhận quyền sử dụng đất số L 531934 do UBND cấp. '
+            'Địa chỉ: Số nhà K104/7 đường A, phường B.'
+        )
+        ner = prediction(text, [('L 531934', 'LOC'), ('K104', 'LOC'), ('A', 'LOC'), ('B', 'LOC')])
+        _, row, audit, _ = process_row(0, {'markdown': text}, ner, 'markdown')
+        self.assertIn('L 531934', row['synthetic_markdown'])
+        self.assertIn('K104/7', row['synthetic_markdown'])
+        rejected = {item['marker']: item.get('link_evidence') for item in audit['rejected_candidates']}
+        self.assertEqual(rejected.get('L531934'), 'document_identifier_context')
+        self.assertEqual(rejected.get('K104'), 'compound_literal_number')
+
+    def test_large_person_ordinal_requires_independent_repetition(self):
+        single = 'Bị cáo: Nguyễn Văn H150 có mặt.'
+        _, row, _, _ = process_row(0, {'markdown': single}, prediction(single, [('Nguyễn Văn H150', 'PER')]), 'markdown')
+        self.assertIn('large_numeric_suffix_requires_repetition', row['review_reasons'])
+        self.assertFalse(row['reconstruction_quality']['eligible'])
+
+        repeated = 'Bị cáo: Nguyễn Văn H150 có mặt. Bị cáo H150 khai nhận.'
+        ner = prediction(repeated, [('Nguyễn Văn H150', 'PER'), ('H150', 'PER')])
+        _, row, _, _ = process_row(0, {'markdown': repeated}, ner, 'markdown')
+        self.assertNotIn('large_numeric_suffix_requires_repetition', row['review_reasons'])
+
     def test_numbered_multi_letter_markers_and_unique_anchor_propagation(self):
         text = (
             'Bà Nguyễn Thị Thu Th1. Theo biên bản, Th1 có mặt. '
@@ -314,13 +353,19 @@ class CourtConventions(unittest.TestCase):
         self.assertNotIn('unsupported_name_prefix',audit['review_reasons'])
 
     def test_production_prefilter_requires_reconstruction_context(self):
-        from src.run_kaggle_10k import feature_profile, primary_challenge
+        import datetime as dt
+        from collections import Counter
+        from src.run_kaggle_10k import feature_profile, has_future_issued_date, primary_challenge, selection_allowed
         hard='Bị cáo: Đàm Xuân H1. Người liên quan NLQ2 ở xã T.'
         profile=feature_profile(hard)
         self.assertTrue(profile['relevant'])
         self.assertEqual(primary_challenge(profile),'procedural_code')
         heading='NHÂN DANH NƯỚC CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM'
         self.assertFalse(feature_profile(heading)['relevant'])
+        self.assertTrue(has_future_issued_date({'issued_date':'2029-05-10'},dt.date(2026,9,15)))
+        self.assertFalse(has_future_issued_date({'issued_date':'2025-05-10'},dt.date(2026,9,15)))
+        self.assertFalse(selection_allowed('Civil','full_name_marker',0,100,Counter(Civil=35),Counter()))
+        self.assertFalse(selection_allowed('Labor','address_marker',0,100,Counter(),Counter(address_marker=60)))
 
     def test_ner_spacing_repairs_preserve_source_and_link_aliases(self):
         text='Ông Nguy ễn Hùng T. Ông Nguyễn Hùng T. Tòa án hu yện V, tỉnh H. Huyện V.'

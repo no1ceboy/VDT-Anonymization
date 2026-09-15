@@ -152,7 +152,7 @@ document type, so a high-quality output can still be checked for diversity.
 python src/inspect_entity_links.py --source-file datasets/legal_test.jsonl --links-file outputs/entity_links.jsonl --synthetic-file outputs/synthetic_unanonymized.jsonl --doc-id 1000001 --output-file outputs/document_review.html
 ```
 
-The viewer shows original and reconstructed text side by side with highlights, document review reasons, and the entity table. Click a mention or table row to highlight the same entity throughout; hover for evidence. LLM decisions are expandable. Mismatched source hashes are rejected. Old outputs remain readable as legacy outputs but need regeneration to show evidence-v4 metadata.
+The viewer shows original and reconstructed text side by side with highlights, document review reasons, and the entity table. Click a mention or table row to highlight the same entity throughout; hover for evidence. LLM decisions are expandable. Mismatched source hashes are rejected. Old outputs remain readable as legacy outputs but need regeneration to show current evidence metadata.
 
 To inspect a complete demo run, generate a folder containing an index and one page per document:
 
@@ -199,7 +199,9 @@ The reconstruction and HTML inspector use only Python's standard library. NER de
 `documents` split, loads NER once, and stops only after selecting exactly 10,000
 records. A clean record must have score 100, no review reason, a verified
 round-trip, and at least one applied reconstruction. LLM decisions are never
-used to auto-accept training records.
+used to auto-accept training records. The v2 selector also deduplicates exact
+source text, rejects future-issued metadata, caps any category at 35%, and caps
+address-primary records at 60%.
 
 ```bash
 python src/run_kaggle_10k.py \

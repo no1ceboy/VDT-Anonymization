@@ -14,13 +14,17 @@ except ImportError:
     from location_gazetteer import admin_path_candidates, names as admin_names, parent_components, record_for_name, spacing_repairs as admin_spacing_repairs, UNITS as ADMIN_UNITS
     from synthetic_lexicon import FAMILY_NAMES, GIVEN_NAMES, NAME_PREFIX_TOKENS, LOCATION_NAMES, SYNTHETIC_ORGANIZATION_NAMES
 
-VERSION = "evidence-v5"
+VERSION = "evidence-v6"
 CODE_RE = re.compile(r"(?:NLQ|NLC)\s*\d+")
-DOTTED = r"(?:[A-ZĐ]\.){1,5}[A-ZĐ](?:[1-9]\d*)?"
-MULTI_INITIAL = r"(?:Th|Ph|Tr|Ng|Ch|Kh|Nh)(?:[ \t]*[1-9]\d*)?"
+# A separator followed by a three-digit group starts a Vietnamese-formatted
+# amount (``H 150.000 đồng``), not an identity ordinal.  The trailing word
+# boundary in TOKEN_RE prevents the engine from backtracking to H15/H1.
+ORDINAL = r"[1-9]\d*(?![.,]\d{3})"
+DOTTED = rf"(?:[A-ZĐ]\.){{1,5}}[A-ZĐ](?:{ORDINAL})?"
+MULTI_INITIAL = rf"(?:Th|Ph|Tr|Ng|Ch|Kh|Nh)(?:[ \t]*{ORDINAL})?"
 TOKEN_RE = re.compile(
     rf"(?<![A-ZĐ\d_])(?:NLQ\s*\d+|NLC\s*\d+|{DOTTED}|"
-    rf"[IVX]{{2,6}}|{MULTI_INITIAL}|[A-ZĐ](?:[ \t]*[1-9]\d*)?)(?!\w)"
+    rf"[IVX]{{2,6}}|{MULTI_INITIAL}|[A-ZĐ](?:[ \t]*{ORDINAL})?)(?!\w)"
 )
 PERSON_TITLE = re.compile(r"(?<!\w)(ông|bà|anh|chị|cháu|cô|chú|bác|em)\s*$", re.I)
 DECLARATION = re.compile(r"(nguyên đơn|bị đơn|bị cáo|bị hại|người làm chứng|người khởi kiện|người bị kiện)\s*:\s*(?:(?:ông|bà|anh|chị|cháu)\s*)?$", re.I)
@@ -39,6 +43,13 @@ ADDRESS_UNITS.setdefault("xóm", "hamlet")
 UNIT_PATTERN = "|".join(re.escape(s) for s in sorted(ADDRESS_UNITS, key=len, reverse=True))
 ADDRESS_PREFIX = re.compile(rf"(?<!\w)({UNIT_PATTERN})\s*$", re.I)
 NONENTITY_PREFIX = re.compile(r"(?:loại|mã|ký hiệu|biển số|số hiệu|điểm|hạng|nhóm)\s*$", re.I)
+IDENTIFIER_PREFIX = re.compile(
+    r"(?:giấy\s+chứng\s+nhận(?:\s+quyền\s+sử\s+dụng\s+đất)?|hộ\s+chiếu|"
+    r"căn\s+cước(?:\s+công\s+dân)?|chứng\s+minh(?:\s+nhân\s+dân)?|hợp\s+đồng|"
+    r"tài\s+khoản|đăng\s+ký(?:\s+kinh\s+doanh)?|biên\s+lai|hóa\s+đơn|"
+    r"biển\s+(?:kiểm\s+soát|số)|mã)\b[^.;:\n]{0,80}\bsố\s*$",
+    re.I,
+)
 FOREIGN_RE = re.compile(r"Đài Loan|Trung Quốc|Australia|Sydney|Hoa Kỳ|Hàn Quốc|Nhật Bản", re.I)
 GENDER = {"ông":"male", "anh":"male", "chú":"male", "bà":"female", "chị":"female", "cô":"female"}
 NEUTRAL = ["Anh", "An", "Bình", "Hà", "Minh", "Thanh", "Tâm"]
@@ -76,6 +87,11 @@ def normalize(value):
 def marker_value(value):
     value = re.sub(r"\s+", "", str(value or ""))
     return value if re.fullmatch(rf"(?:NLQ|NLC)\d+|{DOTTED}|{MULTI_INITIAL}|[A-ZĐ](?:[1-9]\d*)?", value) else None
+
+
+def numeric_suffix(value):
+    match = re.search(r"(\d+)$", re.sub(r"\s+", "", str(value or "")))
+    return int(match.group(1)) if match else None
 
 
 def stable_slot(doc_id, key):
@@ -229,6 +245,10 @@ def detect_candidates(text, ner_record):
             m['link_status']='rejected_nonentity'; m['link_evidence']='abbreviation_or_identifier'; continue
         if NONENTITY_PREFIX.search(before):
             m['link_status']='rejected_nonentity'; m['link_evidence']='technical_or_enumeration_context'; continue
+        if IDENTIFIER_PREFIX.search(before):
+            m['link_status']='rejected_nonentity'; m['link_evidence']='document_identifier_context'; continue
+        if numeric_suffix(token) is not None and re.match(r'\s*/\s*\d', after):
+            m['link_status']='rejected_nonentity'; m['link_evidence']='compound_literal_number'; continue
         # Section-number protection is intentionally case-sensitive. A legal
         # organization such as ``Ngân hàng thương mại cổ phần X`` contains
         # lowercase ``phần`` immediately before its anonymized marker; that
@@ -304,6 +324,9 @@ def detect_candidates(text, ner_record):
                     known_families={normalize(name) for name in FAMILY_NAMES}
                     if family_head not in known_families:
                         issue(m,'unsupported_name_prefix')
+        suffix = numeric_suffix(token)
+        if suffix is not None and suffix >= 20 and m['link_status'] != 'rejected_nonentity':
+            issue(m, 'large_numeric_suffix_requires_repetition')
         # All other tokens stay UNKNOWN. Knowing that another M is a person
         # cannot turn this occurrence into a person or a place.
         if title:
@@ -384,6 +407,22 @@ def link_candidates(text, mentions, resolver=None, doc_id=''):
         mention['review_reasons'] = [
             reason for reason in mention['review_reasons'] if reason != 'unconfirmed_marker'
         ]
+    # Large ordinals are rare but possible in multi-party cases.  Admit one
+    # only when the exact marker occurs at least twice, resolves to one person
+    # anchor, and never receives another type.  A single ``H150`` next to an
+    # amount or identifier therefore cannot enter the clean set.
+    for marker, anchors in registry.items():
+        suffix = numeric_suffix(marker)
+        peers = [m for m in mentions if m['marker'] == marker and m.get('link_status') != 'rejected_nonentity']
+        if suffix is None or suffix < 20 or len(peers) < 2 or len(anchors) != 1:
+            continue
+        if any(m.get('label') not in {'PER', 'UNKNOWN'} for m in peers):
+            continue
+        for mention in peers:
+            mention['review_reasons'] = [
+                reason for reason in mention['review_reasons']
+                if reason != 'large_numeric_suffix_requires_repetition'
+            ]
     declarations=defaultdict(list)
     for m in mentions:
         if m['label']=='PER' and m.get('declaration') and not m.get('person_anchor'):

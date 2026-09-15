@@ -8,7 +8,7 @@ confidence alone.
 from collections import Counter
 
 
-QUALITY_VERSION = "quality-v1"
+QUALITY_VERSION = "quality-v2"
 
 # These findings mean that at least one identity or replacement decision is not
 # safe to use as automatic training data.  They remain in the audit stream for
@@ -37,6 +37,7 @@ REASON_PENALTIES = {
     "overlapping_replacement_spans": 100,
     "invalid_location_hierarchy": 100,
     "incompatible_name_initial": 20,
+    "large_numeric_suffix_requires_repetition": 30,
 }
 
 HARD_FAIL_REASONS = {
@@ -57,6 +58,7 @@ HARD_FAIL_REASONS = {
     "overlapping_replacement_spans",
     "invalid_location_hierarchy",
     "incompatible_name_initial",
+    "large_numeric_suffix_requires_repetition",
 }
 
 
