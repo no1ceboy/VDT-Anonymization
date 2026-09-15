@@ -21,6 +21,7 @@ vdt train-linker `
   --gradient-accumulation 2 `
   --max-length 256 `
   --num-workers 0 `
+  --device cuda `
   --fp16
 ```
 
@@ -34,5 +35,6 @@ vdt eval-linker `
   --pairs outputs/entity_linking_v1/pairs/test.jsonl `
   --output outputs/entity_linker_model/evaluation.json `
   --model-name NlpHUST/ner-vietnamese-electra-base `
+  --device cuda `
   --fp16
 ```

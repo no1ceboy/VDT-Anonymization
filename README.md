@@ -268,7 +268,7 @@ vdt train-linker `
   --test-pairs outputs/entity_linking_v1/pairs/test.jsonl `
   --output-dir outputs/entity_linker_model `
   --model-name NlpHUST/ner-vietnamese-electra-base `
-  --feature-set context --epochs 3 --batch-size 16 --fp16
+  --feature-set context --epochs 3 --batch-size 16 --device cuda --fp16
 ```
 
 `--model-name` may instead point to an already downloaded local model directory
