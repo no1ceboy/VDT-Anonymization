@@ -1,18 +1,13 @@
-"""CLI for the staged legal reconstruction pipeline. See reconstruction.py."""
+"""CLI for the staged legal reconstruction pipeline."""
 import argparse
 import json
 import os
 import hashlib
 from collections import Counter
 
-try:
-    from .legal_linking import GeminiResolver, load_api_key, verify_roundtrip
-    from .reconstruction import VERSION, link_document, apply_replacements, marker_value, observations
-    from .reconstruction_quality import score_document
-except ImportError:
-    from legal_linking import GeminiResolver, load_api_key, verify_roundtrip
-    from reconstruction import VERSION, link_document, apply_replacements, marker_value, observations
-    from reconstruction_quality import score_document
+from ..core.llm_linking import GeminiResolver, load_api_key, verify_roundtrip
+from ..core.quality import score_document
+from ..core.reconstruction import VERSION, apply_replacements, link_document, marker_value, observations
 
 DEFAULT_SOURCE = "datasets/legal_test.jsonl"
 DEFAULT_NER = "outputs/nlphust_legal_test.jsonl"

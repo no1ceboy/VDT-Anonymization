@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vdt-anonymization"
+version = "0.2.0"
+description = "Legal-document reconstruction and entity-linking toolkit"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "torch>=2.1",
+  "transformers>=4.37,<5",
+  "tokenizers>=0.15",
+  "safetensors>=0.4",
+  "datasets>=2.19,<5",
+  "tensorboard>=2.14",
+]
+
+[project.scripts]
+vdt = "vdt_anonymization.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+vdt_anonymization = ["resources/dvhcvn/*"]

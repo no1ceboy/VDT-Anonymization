@@ -6,15 +6,15 @@ import unittest
 import torch
 from torch import nn
 
-from src.entity_linking_data import (
+from vdt_anonymization.entity_linking.dataset import (
     MENTION_CLOSE,
     MENTION_OPEN,
     allocate_splits,
     build_document_pairs,
     pair_features,
 )
-from src.evaluate_entity_linking_baseline import predict
-from src.train_entity_linker import EntityLinkingModel, binary_metrics
+from vdt_anonymization.entity_linking.baseline import predict
+from vdt_anonymization.entity_linking.training import EntityLinkingModel, binary_metrics
 
 
 def replacement(text, surface, occurrence, entity_id, label="PER"):

@@ -1,4 +1,4 @@
-# Direct runtime dependencies for src/run_ner.py.
+# Runtime dependencies for the VDT package.
 # Install from an uploaded wheel/cache on the air-gapped machine.
 torch>=2.1
 transformers>=4.37,<5

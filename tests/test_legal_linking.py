@@ -2,11 +2,11 @@
 import unittest
 from unittest.mock import patch
 
-from src.build_synthetic_unanonymized import link_document, process_row, marker_value
-from src.build_challenge_dataset import challenge_categories
-from src.curate_court_dataset import interest_features, stable_rank, stratum
-from src.legal_linking import GeminiResolver
-from src.reconstruction_quality import score_document
+from vdt_anonymization.core.llm_linking import GeminiResolver
+from vdt_anonymization.core.quality import score_document
+from vdt_anonymization.data.challenges import challenge_categories
+from vdt_anonymization.data.curate import interest_features, stable_rank, stratum
+from vdt_anonymization.pipeline.reconstruct import link_document, marker_value, process_row
 
 
 def prediction(text, surfaces):
@@ -19,7 +19,7 @@ def prediction(text, surfaces):
 
 class CourtConventions(unittest.TestCase):
     def test_administrative_gazetteer(self):
-        from src.location_gazetteer import records, names, parent_components
+        from vdt_anonymization.core.gazetteer import names, parent_components, records
         self.assertEqual(len(records()),10806)
         self.assertEqual(parent_components(', tỉnh Hà Nam nhận định rằng'),['tỉnh hà nam'])
         self.assertEqual(parent_components(', tỉnh Hà Tĩnh'),['tỉnh hà tĩnh'])
@@ -99,7 +99,7 @@ class CourtConventions(unittest.TestCase):
         self.assertTrue(all(not e['reconstructable'] for e in entities))
 
     def test_gazetteer_spacing_keeps_offsets_and_aliases(self):
-        from src.reconstruction import observations
+        from vdt_anonymization.core.reconstruction import observations
         text='xã Vĩnh Thạ nh'
         record=observations(text,prediction(text,[(text,'LOC')]))[0]
         self.assertEqual(record['normalized_text'],'xã Vĩnh Thạnh')
@@ -122,7 +122,7 @@ class CourtConventions(unittest.TestCase):
         self.assertEqual(len({p['entity_id'] for p in audit['replacements']}),1)
 
     def test_location_prefix_lookback_three_token_limit(self):
-        from src.reconstruction import observations
+        from vdt_anonymization.core.reconstruction import observations
         for prefix in ('hu yện', 'h u yện', 'thành ph ố'):
             text=prefix+' V, tỉnh H.'
             _,_,audit,_=process_row(0,{'markdown':text},prediction(text,[('V','LOC')]),'markdown')
@@ -140,7 +140,7 @@ class CourtConventions(unittest.TestCase):
         self.assertEqual(record['text'],text)
 
     def test_all_person_observations_receive_spacing_view(self):
-        from src.reconstruction import observations
+        from vdt_anonymization.core.reconstruction import observations
         text='Nguy ễn Hùng Trị; Nguy ễn Hùng T; Nguyễn Hùng Trị; N.H.H; NLQ1'
         surfaces=['Nguy ễn Hùng Trị','Nguy ễn Hùng T','Nguyễn Hùng Trị','N.H.H','NLQ1']
         records=observations(text,prediction(text,[(s,'PER') for s in surfaces]))
@@ -217,7 +217,7 @@ class CourtConventions(unittest.TestCase):
         self.assertNotIn('large_numeric_suffix_requires_repetition', row['review_reasons'])
 
     def test_legacy_numeric_postfilter_rejects_collision_but_keeps_repeated_ordinal(self):
-        from src.filter_v1_numeric_collisions import semantic_rejection_reasons
+        from vdt_anonymization.data.filter_legacy import semantic_rejection_reasons
         source='Hoàn trả chị Nguyễn Thị H 150.000 đồng.'
         row={'original_anonymized_markdown':source}
         start=source.index('Nguyễn')
@@ -331,7 +331,7 @@ class CourtConventions(unittest.TestCase):
         self.assertIn('conflicting_location_parents',villages[0]['review_reasons'])
 
     def test_masked_admin_locations_share_one_valid_parent_path(self):
-        from src.location_gazetteer import record_for_name, records
+        from vdt_anonymization.core.gazetteer import record_for_name, records
         text='Trú tại: xóm T, xã H, huyện K, tỉnh Hòa Bình.'
         _,row,audit,_=process_row(0,{'markdown':text},None,'markdown')
         district=next(e for e in audit['entities'] if e['role']=='district')
@@ -379,7 +379,7 @@ class CourtConventions(unittest.TestCase):
     def test_production_prefilter_requires_reconstruction_context(self):
         import datetime as dt
         from collections import Counter
-        from src.run_kaggle_10k import feature_profile, has_future_issued_date, primary_challenge, selection_allowed
+        from vdt_anonymization.pipeline.kaggle import feature_profile, has_future_issued_date, primary_challenge, selection_allowed
         hard='Bị cáo: Đàm Xuân H1. Người liên quan NLQ2 ở xã T.'
         profile=feature_profile(hard)
         self.assertTrue(profile['relevant'])
@@ -455,7 +455,7 @@ class CourtConventions(unittest.TestCase):
         self.assertEqual(row['review_status'],'needs_review')
 
     def test_viewer_checks_source_and_highlights_both_sides(self):
-        from src.inspect_entity_links import build_html
+        from vdt_anonymization.review.entity_links import build_html
         row={'markdown':'Bị đơn: Bà A. Bà A xác nhận.'}
         _,out,audit,_=process_row(0,row,{'entities':[]},'markdown')
         rendered=build_html('0',row,audit,out)

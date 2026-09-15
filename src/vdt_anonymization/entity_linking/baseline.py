@@ -7,10 +7,7 @@ import json
 from collections import Counter, defaultdict
 from pathlib import Path
 
-try:
-    from .entity_linking_data import marker_family, normalize_text
-except ImportError:
-    from entity_linking_data import marker_family, normalize_text
+from .dataset import marker_family, normalize_text
 
 
 def predict(pair: dict, method: str) -> int:

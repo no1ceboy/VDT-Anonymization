@@ -5,7 +5,7 @@ from functools import lru_cache
 from pathlib import Path
 import re
 
-DATA = Path(__file__).resolve().parent.parent/'resources'/'dvhcvn'/'units.tsv'
+DATA = Path(__file__).resolve().parents[1] / 'resources' / 'dvhcvn' / 'units.tsv'
 UNITS = ('thành phố','thị trấn','thị xã','phường','huyện','quận','tỉnh','xã')
 UNIT_RE = re.compile(r'(?<!\w)('+ '|'.join(UNITS) +r')[ \t]+',re.I)
 ALIAS_RE = re.compile(r'[A-ZĐ](?:[1-9]\d*)?(?!\w)')

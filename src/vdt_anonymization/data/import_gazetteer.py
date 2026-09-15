@@ -7,7 +7,7 @@ import urllib.request
 
 REVISION = '52a2526adb944f9f5bae2155067beb26f4726bc2'
 BASE = f'https://raw.githubusercontent.com/daohoangson/dvhcvn/{REVISION}/'
-DEST = Path(__file__).resolve().parent.parent / 'resources' / 'dvhcvn'
+DEST = Path(__file__).resolve().parents[1] / 'resources' / 'dvhcvn'
 
 
 def main():

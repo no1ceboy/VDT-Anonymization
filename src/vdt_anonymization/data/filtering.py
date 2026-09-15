@@ -9,10 +9,7 @@ import json
 import os
 from collections import Counter
 
-try:
-    from .reconstruction_quality import QUALITY_VERSION, score_document
-except ImportError:
-    from reconstruction_quality import QUALITY_VERSION, score_document
+from ..core.quality import QUALITY_VERSION, score_document
 
 
 DEFAULT_SYNTHETIC = "outputs/synthetic_unanonymized.jsonl"
@@ -152,4 +149,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

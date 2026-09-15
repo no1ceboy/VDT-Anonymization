@@ -56,7 +56,7 @@ def extract(rows):
                     'raw_tokens': tokens[begin:i],
                     'context': clean(' '.join(tokens[max(0, begin-8):min(len(tokens), i+8)])),
                 })
-    from synthetic_lexicon import FAMILY_NAMES
+    from ..core.lexicon import FAMILY_NAMES
     families = {name.casefold() for name in FAMILY_NAMES}
     for entry in inventories['PER'].values():
         parts = entry['name'].split()

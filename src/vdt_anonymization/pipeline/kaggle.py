@@ -20,30 +20,17 @@ import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
-try:
-    from .build_synthetic_unanonymized import process_row
-    from .reconstruction import VERSION, TOKEN_RE
-    from .run_ner import (
-        DEFAULT_MODEL,
-        choose_device,
-        infer_document,
-        load_model,
-        model_label_map,
-        parse_entity_types,
-    )
-    from .synthetic_lexicon import FAMILY_NAMES
-except ImportError:
-    from build_synthetic_unanonymized import process_row
-    from reconstruction import VERSION, TOKEN_RE
-    from run_ner import (
-        DEFAULT_MODEL,
-        choose_device,
-        infer_document,
-        load_model,
-        model_label_map,
-        parse_entity_types,
-    )
-    from synthetic_lexicon import FAMILY_NAMES
+from ..core.lexicon import FAMILY_NAMES
+from ..core.reconstruction import TOKEN_RE, VERSION
+from .ner import (
+    DEFAULT_MODEL,
+    choose_device,
+    infer_document,
+    load_model,
+    model_label_map,
+    parse_entity_types,
+)
+from .reconstruct import process_row
 
 
 RUN_VERSION = "kaggle-clean-10k-v2"

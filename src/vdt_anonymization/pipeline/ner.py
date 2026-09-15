@@ -8,7 +8,7 @@ character offsets in the original document text.
 Examples:
 
     # Download/cache or resolve a Hugging Face model reference
-    python src/run_ner.py \
+    vdt run-ner \
         --model-source huggingface \
         --model-name NlpHUST/ner-vietnamese-electra-base \
         --input-file datasets/legal_test.jsonl \
@@ -16,7 +16,7 @@ Examples:
         --limit 100
 
     # Later, use a manually uploaded local checkpoint
-    python src/run_ner.py \
+    vdt run-ner \
         --model-source local \
         --model-path /models/ner-vietnamese-electra-base \
         --input-file datasets/legal_test.jsonl \

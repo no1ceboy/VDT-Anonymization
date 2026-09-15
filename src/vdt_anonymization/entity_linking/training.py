@@ -1,6 +1,6 @@
 """Train a Siamese encoder + pair-feature MLP for within-document entity linking.
 
-This trainer consumes JSONL emitted by entity_linking_data.py.  It supports
+This trainer consumes JSONL emitted by ``vdt build-linking-data``. It supports
 safe epoch checkpoints and does not require synthetic reconstructed names.
 """
 
@@ -18,10 +18,7 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoModel, AutoTokenizer
 
-try:
-    from .entity_linking_data import MENTION_CLOSE, MENTION_OPEN, PAIR_FEATURE_NAMES
-except ImportError:
-    from entity_linking_data import MENTION_CLOSE, MENTION_OPEN, PAIR_FEATURE_NAMES
+from .dataset import MENTION_CLOSE, MENTION_OPEN, PAIR_FEATURE_NAMES
 
 
 class JsonlPairDataset(Dataset):
@@ -159,13 +156,15 @@ def move_batch(batch: dict, device: torch.device) -> dict:
 
 
 @torch.no_grad()
-def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> tuple[list[int], list[float], float]:
+def evaluate(model: nn.Module, loader: DataLoader, device: torch.device,
+             fp16: bool = False) -> tuple[list[int], list[float], float]:
     model.eval()
     labels, scores, loss_sum = [], [], 0.0
     criterion = nn.BCEWithLogitsLoss(reduction="sum")
     for raw_batch in loader:
         batch = move_batch(raw_batch, device)
-        logits = model(batch["a"], batch["b"], batch["features"])
+        with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=fp16 and device.type == "cuda"):
+            logits = model(batch["a"], batch["b"], batch["features"])
         loss_sum += float(criterion(logits, batch["labels"]).item())
         labels.extend(batch["labels"].int().cpu().tolist())
         scores.extend(torch.sigmoid(logits).cpu().tolist())
@@ -308,7 +307,7 @@ def train(args: argparse.Namespace) -> dict:
                 scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
 
-        val_labels, val_scores, val_loss = evaluate(model, loaders["validation"], device)
+        val_labels, val_scores, val_loss = evaluate(model, loaders["validation"], device, args.fp16)
         threshold, val_metrics = best_threshold(val_labels, val_scores)
         epoch_result = {
             "epoch": epoch,
@@ -335,7 +334,7 @@ def train(args: argparse.Namespace) -> dict:
 
     best = torch.load(best_model_path, map_location=device, weights_only=False)
     model.load_state_dict(best["model_state"])
-    test_labels, test_scores, test_loss = evaluate(model, loaders["test"], device)
+    test_labels, test_scores, test_loss = evaluate(model, loaders["test"], device, args.fp16)
     test_metrics = binary_metrics(test_labels, test_scores, float(best["threshold"]))
     result = {"best_epoch": best["epoch"], "validation_selected_threshold": best["threshold"],
               "test_loss": test_loss, "test": test_metrics}

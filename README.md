@@ -1,15 +1,23 @@
 # Vietnamese legal synthetic reconstruction
 
+## Install
+
+```powershell
+python -m pip install .
+```
+
+All workflows are available through `vdt --help`.
+
 ## Prepare the court-document collection
 
-`src/prepare_court_dataset.py` downloads only the document Parquet shards from
+`vdt prepare-court` downloads only the document Parquet shards from
 `tmquan/congbobanan-toaan-gov-vn`, pins the resolved repository revision, and
 converts them to one UTF-8 JSONL with the existing `case_id` and `markdown`
 fields. All source columns are retained. It requires `pyarrow` and, for online
 downloads, `huggingface_hub`; neither is needed to read the prepared JSONL.
 
 ```powershell
-python src/prepare_court_dataset.py --output-dir datasets/court_documents
+vdt prepare-court --output-dir datasets/court_documents
 ```
 
 Set `HF_TOKEN` in the process environment if repository access requires a token.
@@ -20,17 +28,17 @@ input. The manifest records source hashes, revision (when known), row counts,
 and skipped empty/duplicate records. No train/test split is inferred.
 
 ```powershell
-python src/run_ner.py --input-file datasets/court_documents/documents.jsonl --output-file outputs/ner_predictions.jsonl --limit 20 --device auto
-python src/build_synthetic_unanonymized.py --input-file datasets/court_documents/documents.jsonl --ner-file outputs/ner_predictions.jsonl --limit 20
+vdt run-ner --input-file datasets/court_documents/documents.jsonl --output-file outputs/ner_predictions.jsonl --limit 20 --device auto
+vdt reconstruct --input-file datasets/court_documents/documents.jsonl --ner-file outputs/ner_predictions.jsonl --limit 20
 ```
 
 Use the same `documents.jsonl` as `--source-file` for the HTML inspector.
 `datasets/court_documents_local/`, if present, is an independently prepared
 local-shard subset, not a verified complete/current Hugging Face snapshot.
 
-The pipeline generates synthetic replacements for masked references in published court documents. It does not recover hidden identities. Run commands from the repository root; existing notebook shell commands remain compatible.
+The pipeline generates synthetic replacements for masked references in published court documents. It does not recover hidden identities. Run `vdt` commands from the repository root after installing the package.
 
-## Design: evidence-v4
+## Design: evidence-v6
 
 | Stage | Responsibility | Evidence required |
 |---|---|---|
@@ -43,13 +51,13 @@ The pipeline generates synthetic replacements for masked references in published
 
 No document-wide marker-label propagation is performed. A typed person M elsewhere cannot classify an unknown occurrence of M. Address groups include the precise unit and parent context; an identical letter in two different address hierarchies does not establish identity.
 
-The modules separate these responsibilities:
+The package separates these responsibilities:
 
-- `src/reconstruction.py`: candidate evidence, type decisions, typed identity registry, replacement planning.
-- `src/synthetic_lexicon.py`: synthetic vocabulary only.
-- `src/legal_linking.py`: bounded Gemini requests, validated decisions, and round-trip verification.
-- `src/build_synthetic_unanonymized.py`: compatible CLI and dataset/audit/map output.
-- `src/inspect_entity_links.py`: standalone HTML review.
+- `vdt_anonymization.core`: reconstruction, evidence linking, quality, and offline vocabularies.
+- `vdt_anonymization.pipeline`: NER, reconstruction, and production Kaggle workflows.
+- `vdt_anonymization.data`: preparation, curation, filtering, and challenge builders.
+- `vdt_anonymization.entity_linking`: pair data, baselines, training, and evaluation.
+- `vdt_anonymization.review`: standalone HTML review tools.
 
 The former proximity/marker-propagation engine has been removed. NER evidence retains its original label and score in `ner_evidence`; that score is not presented as final linking confidence.
 
@@ -64,7 +72,7 @@ The former proximity/marker-propagation engine has been removed. NER evidence re
 
 ### Offline administrative location vocabulary
 
-Reconstruction uses the bundled [dvhcvn vocabulary](resources/dvhcvn/SOURCE.md): a pinned **1 March 2025** snapshot with 63 province-level, 696 district-level and 10,047 commune-level records. Source IDs and parent IDs are retained in `resources/dvhcvn/units.tsv`, with upstream attribution and license alongside it. No download is needed at runtime. `python src/import_dvhcvn.py` regenerates these resources from the pinned upstream revision when internet is available.
+Reconstruction uses the bundled [dvhcvn vocabulary](src/vdt_anonymization/resources/dvhcvn/SOURCE.md): a pinned **1 March 2025** snapshot with 63 province-level, 696 district-level and 10,047 commune-level records. Source IDs and parent IDs are retained in the packaged `units.tsv`, with upstream attribution and license alongside it. No download is needed at runtime. `vdt import-gazetteer` regenerates these resources from the pinned upstream revision when internet is available.
 
 - Administrative replacements use real names of the exact unit (`huyện`, `quận`, `xã`, `phường`, etc.), excluding purely numeric names for alphabetic aliases. Hamlet/street names retain synthetic fallback pools. Alias initials are not enforced for locations.
 - Detection still prioritizes explicit address grammar. The vocabulary recognizes complete adjacent parent names, avoiding truncated names and arbitrary prose. Dictionary-supported spacing repair operates within NER spans, protects anonymization markers and leaves source offsets/text untouched. It is not a standalone full-document location NER replacement.
@@ -83,13 +91,13 @@ Reference conventions: [Article 7 of NQ 03/2017/NQ-HĐTP](https://thuvienphaplua
 Reconstruction and inspection require only Python's standard library. NER requirements are in `requirements.txt`.
 
 ```bash
-python src/build_synthetic_unanonymized.py --input-file datasets/legal_test.jsonl --ner-file outputs/nlphust_legal_sample.jsonl --limit 20
+vdt reconstruct --input-file datasets/legal_test.jsonl --ner-file outputs/nlphust_legal_sample.jsonl --limit 20
 ```
 
 Optional Gemini: set `GOOGLE_API_KEY` or `GEMINI_API_KEY` in the same terminal that runs Python. Alternatively use `--env-file .env` with a local key file ignored by Git. No Google SDK is required.
 
 ```bash
-python src/build_synthetic_unanonymized.py --input-file datasets/legal_test.jsonl --ner-file outputs/nlphust_legal_sample.jsonl --limit 20 --llm-provider gemini --llm-model YOUR_GEMINI_MODEL_ID --llm-max-calls 20
+vdt reconstruct --input-file datasets/legal_test.jsonl --ner-file outputs/nlphust_legal_sample.jsonl --limit 20 --llm-provider gemini --llm-model YOUR_GEMINI_MODEL_ID --llm-max-calls 20
 ```
 
 Choose a model available to your Google project. Gemini receives selected document excerpts. Its tasks are type conflicts, unknown procedural types, ambiguous references and untyped references to existing person candidates. It chooses supplied IDs, NOT_ENTITY where offered, or ABSTAIN. It cannot invent names or overwrite protected lexical identifiers.
@@ -117,7 +125,7 @@ curation command selects a deterministic, marker-bearing subset while keeping
 legal diversity across `case_type`, `doc_type`, and `cap_xet_xu`:
 
 ```powershell
-python src/curate_court_dataset.py `
+vdt curate `
   --input-file datasets/court_documents_local/documents.jsonl `
   --output-file datasets/court_documents_curated/documents.jsonl `
   --per-stratum 100 --min-chars 500
@@ -132,7 +140,7 @@ set is desired.
 After NER and reconstruction, score and keep conservative records:
 
 ```powershell
-python src/filter_reconstructed_dataset.py `
+vdt filter `
   --synthetic-file outputs/synthetic_unanonymized.jsonl `
   --links-file outputs/entity_links.jsonl `
   --clean-output outputs/synthetic_unanonymized_clean.jsonl `
@@ -149,7 +157,7 @@ The report includes rejection reasons and selected distributions by case and
 document type, so a high-quality output can still be checked for diversity.
 
 ```bash
-python src/inspect_entity_links.py --source-file datasets/legal_test.jsonl --links-file outputs/entity_links.jsonl --synthetic-file outputs/synthetic_unanonymized.jsonl --doc-id 1000001 --output-file outputs/document_review.html
+vdt review --source-file datasets/legal_test.jsonl --links-file outputs/entity_links.jsonl --synthetic-file outputs/synthetic_unanonymized.jsonl --doc-id 1000001 --output-file outputs/document_review.html
 ```
 
 The viewer shows original and reconstructed text side by side with highlights, document review reasons, and the entity table. Click a mention or table row to highlight the same entity throughout; hover for evidence. LLM decisions are expandable. Mismatched source hashes are rejected. Old outputs remain readable as legacy outputs but need regeneration to show current evidence metadata.
@@ -157,7 +165,7 @@ The viewer shows original and reconstructed text side by side with highlights, d
 To inspect a complete demo run, generate a folder containing an index and one page per document:
 
 ```bash
-python src/inspect_demo.py \
+vdt review-demo \
   --source-file datasets/demo_court_documents_v2/documents.jsonl \
   --links-file outputs/demo_100_entity_links.jsonl \
   --synthetic-file outputs/demo_100_synthetic_unanonymized.jsonl \
@@ -170,7 +178,7 @@ Open `outputs/demo_100_html/index.html`. The index can be filtered by document I
 Keep difficult cases separate from training-clean records:
 
 ```powershell
-python src/build_challenge_dataset.py `
+vdt build-challenges `
   --synthetic-file outputs/demo_100_synthetic_unanonymized.jsonl `
   --links-file outputs/demo_100_entity_links.jsonl `
   --output-file outputs/demo_100_synthetic_unanonymized_challenge.jsonl `
@@ -195,7 +203,7 @@ The reconstruction and HTML inspector use only Python's standard library. NER de
 
 ## Production 10k run (Kaggle)
 
-`src/run_kaggle_10k.py` streams the Hugging Face `tmquan/cbba-toaan-gov-vn`
+`vdt kaggle-10k` streams the Hugging Face `tmquan/cbba-toaan-gov-vn`
 `documents` split, loads NER once, and stops only after selecting exactly 10,000
 records. A clean record must have score 100, no review reason, a verified
 round-trip, and at least one applied reconstruction. LLM decisions are never
@@ -204,7 +212,7 @@ source text, rejects future-issued metadata, caps any category at 35%, and caps
 address-primary records at 60%.
 
 ```bash
-python src/run_kaggle_10k.py \
+vdt kaggle-10k \
   --output-dir /kaggle/working/vdt_clean_10k \
   --target 10000 \
   --device cuda \
@@ -227,7 +235,7 @@ Create deterministic, document-disjoint train/validation/test splits from a
 clean dataset and its aligned compact maps:
 
 ```powershell
-python src/entity_linking_data.py `
+vdt build-linking-data `
   --clean-input outputs/kaggle_clean_10k/vdt_clean_10k/filtered_v1/clean_filtered.jsonl `
   --maps-input outputs/kaggle_clean_10k/vdt_clean_10k/filtered_v1/clean_filtered_maps.jsonl `
   --output-dir outputs/entity_linking_v1
@@ -245,16 +253,16 @@ original anonymized context and never the synthetic replacement value.
 Measure rule agreement on the held-out test pairs:
 
 ```powershell
-python src/evaluate_entity_linking_baseline.py `
+vdt evaluate-linking-baseline `
   --pairs outputs/entity_linking_v1/pairs/test.jsonl `
   --output outputs/entity_linking_v1/baseline_test.json
 ```
 
-On the training workstation, install `requirements.txt` and fine-tune the shared
-Vietnamese encoder plus pair MLP:
+On the training workstation, install the package with `python -m pip install .`
+and fine-tune the shared Vietnamese encoder plus pair MLP:
 
 ```powershell
-python src/train_entity_linker.py `
+vdt train-linker `
   --train-pairs outputs/entity_linking_v1/pairs/train.jsonl `
   --validation-pairs outputs/entity_linking_v1/pairs/validation.jsonl `
   --test-pairs outputs/entity_linking_v1/pairs/test.jsonl `
@@ -300,13 +308,13 @@ The rules follow [Article 7 of NQ 03/2017/NQ-HĐTP](https://thuvienphapluat.vn/v
 ## Run locally or in a notebook shell cell
 
 ```bash
-python src/build_synthetic_unanonymized.py --input-file datasets/legal_test.jsonl --ner-file outputs/nlphust_legal_sample.jsonl --limit 20
+vdt reconstruct --input-file datasets/legal_test.jsonl --ner-file outputs/nlphust_legal_sample.jsonl --limit 20
 ```
 
 To use Gemini, set `GOOGLE_API_KEY` or `GEMINI_API_KEY` in the process environment. Alternatively, create a local `.env` containing `GOOGLE_API_KEY=...` and pass `--env-file .env`. These files are ignored by Git. No Google SDK installation is needed.
 
 ```bash
-python src/build_synthetic_unanonymized.py --input-file datasets/legal_test.jsonl --ner-file outputs/nlphust_legal_sample.jsonl --limit 20 --llm-provider gemini --llm-model YOUR_GEMINI_MODEL_ID --llm-max-calls 20
+vdt reconstruct --input-file datasets/legal_test.jsonl --ner-file outputs/nlphust_legal_sample.jsonl --limit 20 --llm-provider gemini --llm-model YOUR_GEMINI_MODEL_ID --llm-max-calls 20
 ```
 
 Replace the model placeholder with a model available to your Google project. Gemini sends the selected document excerpts to Google's API. The call budget applies across the whole run; `--llm-max-calls 0` makes no requests. Timeouts, failed requests, invalid choices and abstentions leave mentions unresolved and appear in the audit. There are no automatic retries. The implementation uses Google's [generateContent REST API](https://ai.google.dev/api/generate-content).
@@ -324,7 +332,7 @@ Only three reconstruction outputs are written, using the existing filenames (rer
 Use `--output-file`, `--links-file`, and `--maps-file` to change these paths. The input NER file is preserved. LLM audit data are embedded, with no extra debug output files.
 
 ```bash
-python src/inspect_entity_links.py --source-file datasets/legal_test.jsonl --links-file outputs/entity_links.jsonl --doc-id 1003850 --output-file outputs/document_review.html
+vdt review --source-file datasets/legal_test.jsonl --links-file outputs/entity_links.jsonl --doc-id 1003850 --output-file outputs/document_review.html
 ```
 
 The inspector shows encoding, role, unresolved status and expandable LLM decisions. Round-trip verification checks replacement integrity, not semantic correctness. `skipped_overlapping_replacements` reports remaining overlap conflicts. Rules are heuristics and cannot certify NER recall or geographic plausibility.

@@ -17,10 +17,7 @@ from collections import Counter
 from itertools import zip_longest
 from pathlib import Path
 
-try:
-    from .reconstruction import IDENTIFIER_PREFIX, numeric_suffix
-except ImportError:
-    from reconstruction import IDENTIFIER_PREFIX, numeric_suffix
+from ..core.reconstruction import IDENTIFIER_PREFIX, numeric_suffix
 
 
 FILTER_VERSION = "legacy-numeric-postfilter-v1"

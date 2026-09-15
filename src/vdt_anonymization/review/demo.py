@@ -9,10 +9,7 @@ import os
 from collections import Counter
 from urllib.parse import quote
 
-try:
-    from .inspect_entity_links import build_html, document_id
-except ImportError:
-    from inspect_entity_links import build_html, document_id
+from .entity_links import build_html, document_id
 
 
 DEFAULT_SOURCE = "datasets/demo_court_documents_v2/documents.jsonl"

@@ -7,12 +7,21 @@ import hashlib
 import re
 from collections import defaultdict
 
-try:
-    from .location_gazetteer import admin_path_candidates, names as admin_names, parent_components, record_for_name, spacing_repairs as admin_spacing_repairs, UNITS as ADMIN_UNITS
-    from .synthetic_lexicon import FAMILY_NAMES, GIVEN_NAMES, NAME_PREFIX_TOKENS, LOCATION_NAMES, SYNTHETIC_ORGANIZATION_NAMES
-except ImportError:
-    from location_gazetteer import admin_path_candidates, names as admin_names, parent_components, record_for_name, spacing_repairs as admin_spacing_repairs, UNITS as ADMIN_UNITS
-    from synthetic_lexicon import FAMILY_NAMES, GIVEN_NAMES, NAME_PREFIX_TOKENS, LOCATION_NAMES, SYNTHETIC_ORGANIZATION_NAMES
+from .gazetteer import (
+    UNITS as ADMIN_UNITS,
+    admin_path_candidates,
+    names as admin_names,
+    parent_components,
+    record_for_name,
+    spacing_repairs as admin_spacing_repairs,
+)
+from .lexicon import (
+    FAMILY_NAMES,
+    GIVEN_NAMES,
+    LOCATION_NAMES,
+    NAME_PREFIX_TOKENS,
+    SYNTHETIC_ORGANIZATION_NAMES,
+)
 
 VERSION = "evidence-v6"
 CODE_RE = re.compile(r"(?:NLQ|NLC)\s*\d+")
