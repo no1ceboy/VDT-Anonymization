@@ -259,7 +259,10 @@ vdt evaluate-linking-baseline `
 ```
 
 On the training workstation, install the package with `python -m pip install .`
-and fine-tune the shared Vietnamese encoder plus pair MLP:
+and fine-tune the shared Vietnamese encoder plus pair MLP. The trainer supports
+`fft` (full fine-tuning), `frozen` (head only), `lora`, and `qlora` (4-bit NF4
+base plus LoRA). Install `python -m pip install ".[efficient]"` for the last
+two modes.
 
 ```powershell
 vdt train-linker `
@@ -268,8 +271,16 @@ vdt train-linker `
   --test-pairs outputs/entity_linking_v1/pairs/test.jsonl `
   --output-dir outputs/entity_linker_model `
   --model-name NlpHUST/ner-vietnamese-electra-base `
-  --feature-set context --epochs 3 --batch-size 16 --device cuda --fp16
+  --feature-set context --finetune-mode fft --epochs 3 --batch-size 16 `
+  --device cuda --fp16 --amp-dtype bf16
 ```
+
+For an inexpensive pilot, add `--max-train-steps 200 --max-eval-steps 100
+--epochs 1`. On one GPU, run ablations sequentially in separate output
+directories; parallel jobs compete for HBM. Peak allocated and reserved GPU
+memory are recorded in TensorBoard and `training_history.json` so batch size
+can be increased to the largest stable value without chasing an out-of-memory
+failure.
 
 `--model-name` may instead point to an already downloaded local model directory
 for an offline company machine. The trainer writes an interruption-safe

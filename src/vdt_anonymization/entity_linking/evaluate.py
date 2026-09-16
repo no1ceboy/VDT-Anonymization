@@ -8,7 +8,7 @@ from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoTokenizer
 
 from .dataset import MENTION_CLOSE, MENTION_OPEN
 from .training import (
@@ -19,6 +19,7 @@ from .training import (
     evaluate as score_model,
     save_json,
 )
+from .finetuning import ADAPTER_MODES, build_encoder, compute_dtype
 
 
 def run(args: argparse.Namespace) -> dict:
@@ -34,15 +35,40 @@ def run(args: argparse.Namespace) -> dict:
     if isinstance(tokenizer_source, Path) and not tokenizer_source.exists():
         tokenizer_source = model_source
 
+    mode = config.get("finetune_mode", "fft")
+    amp_dtype = compute_dtype(args.amp_dtype)
+    qlora_dtype = compute_dtype(args.qlora_compute_dtype) if args.qlora_compute_dtype else amp_dtype
     tokenizer = AutoTokenizer.from_pretrained(str(tokenizer_source))
-    tokenizer.add_special_tokens({"additional_special_tokens": [MENTION_OPEN, MENTION_CLOSE]})
-    encoder = AutoModel.from_pretrained(str(model_source))
-    encoder.resize_token_embeddings(len(tokenizer))
+    if tokenizer.pad_token is None:
+        if tokenizer.eos_token is None:
+            raise ValueError("tokenizer has no pad or eos token; provide a tokenizer with padding support")
+        tokenizer.pad_token = tokenizer.eos_token
+    if mode != "qlora":
+        tokenizer.add_special_tokens({"additional_special_tokens": [MENTION_OPEN, MENTION_CLOSE]})
+    adapter_path = None
+    if mode in ADAPTER_MODES:
+        adapter_path = args.checkpoint.parent / checkpoint.get("adapter_dir", "best_adapter")
+        if not adapter_path.is_dir():
+            raise ValueError(f"adapter checkpoint directory is missing: {adapter_path}")
+    encoder, _ = build_encoder(
+        str(model_source), mode, device,
+        tokenizer_size=len(tokenizer) if mode != "qlora" else None,
+        add_tokens=mode != "qlora",
+        lora_target_modules=",".join(config.get("lora_target_modules") or []) or "auto",
+        adapter_path=adapter_path,
+        qlora_compute_dtype=qlora_dtype,
+    )
     feature_names = tuple(config.get("feature_names") or [])
     dropout = float((config.get("arguments") or {}).get("dropout", 0.15))
     model = EntityLinkingModel(encoder, len(feature_names), dropout)
-    model.load_state_dict(checkpoint["model_state"])
-    model.to(device)
+    if mode in ADAPTER_MODES:
+        model.classifier.load_state_dict(checkpoint["classifier_state"])
+    else:
+        model.load_state_dict(checkpoint["model_state"])
+    if mode == "qlora":
+        model.classifier.to(device)
+    else:
+        model.to(device)
 
     dataset = JsonlPairDataset(args.pairs)
     collator = PairCollator(tokenizer, args.max_length or int(config.get("max_length", 256)), feature_names)
@@ -54,7 +80,7 @@ def run(args: argparse.Namespace) -> dict:
         collate_fn=collator,
         pin_memory=device.type == "cuda",
     )
-    labels, scores, loss = score_model(model, loader, device, args.fp16)
+    labels, scores, loss = score_model(model, loader, device, args.fp16, amp_dtype, args.max_eval_steps)
     result = {
         "checkpoint": str(args.checkpoint),
         "pairs": str(args.pairs),
@@ -79,6 +105,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--fp16", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--amp-dtype", choices=["fp16", "bf16"], default="bf16")
+    parser.add_argument("--qlora-compute-dtype", choices=["fp16", "bf16"])
+    parser.add_argument("--max-eval-steps", type=int)
     args = parser.parse_args()
     args.checkpoint = args.checkpoint.resolve()
     args.pairs = args.pairs.resolve()
@@ -87,6 +116,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("checkpoint and pair files must exist")
     if args.batch_size < 1 or args.num_workers < 0 or (args.max_length is not None and args.max_length < 16):
         parser.error("batch size must be positive, workers non-negative, and max length >=16")
+    if args.max_eval_steps is not None and args.max_eval_steps < 1:
+        parser.error("max eval steps must be positive")
     return args
 
 

@@ -15,6 +15,7 @@ from vdt_anonymization.entity_linking.dataset import (
 )
 from vdt_anonymization.entity_linking.baseline import predict
 from vdt_anonymization.entity_linking.training import EntityLinkingModel, binary_metrics
+from vdt_anonymization.entity_linking.finetuning import normalize_finetune_mode, select_lora_targets
 
 
 def replacement(text, surface, occurrence, entity_id, label="PER"):
@@ -108,6 +109,20 @@ class EntityLinkingDataTests(unittest.TestCase):
         batch = {"input_ids": torch.tensor([[1, 2, 0], [2, 3, 1]]), "attention_mask": torch.tensor([[1, 1, 0], [1, 1, 1]])}
         logits = model(batch, batch, torch.zeros((2, 2)))
         self.assertEqual(tuple(logits.shape), (2,))
+
+    def test_finetune_modes_and_automatic_lora_targets(self):
+        class Encoder(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.query = nn.Linear(4, 4)
+                self.key = nn.Linear(4, 4)
+                self.value = nn.Linear(4, 4)
+
+        self.assertEqual(normalize_finetune_mode("fft", True), "frozen")
+        self.assertEqual(normalize_finetune_mode("lora"), "lora")
+        self.assertEqual(select_lora_targets(Encoder()), ["query", "key", "value"])
+        with self.assertRaises(ValueError):
+            normalize_finetune_mode("invalid")
 
 
 if __name__ == "__main__":
