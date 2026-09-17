@@ -1,6 +1,5 @@
 ```powershell
-python -m pip install .
-$env:PYTHONPATH = "$PWD\src"
+python -m pip install -e .
 $env:CUDA_VISIBLE_DEVICES = "0"
 python -m vdt_anonymization train-linker `
   --train-pairs outputs/entity_linking_v1/pairs/train.jsonl `
