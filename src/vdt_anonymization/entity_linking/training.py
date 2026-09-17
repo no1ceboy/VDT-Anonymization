@@ -7,12 +7,43 @@ import json
 import math
 import os
 import random
+from itertools import islice
 from pathlib import Path
 
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoTokenizer
+
+try:
+    from tqdm.auto import tqdm
+except ImportError:  # pragma: no cover - transformers normally brings tqdm along
+    class _FallbackProgress:
+        def __init__(self, iterable, total, desc, **_kwargs):
+            self.iterable = iterable
+            self.total = total
+            self.desc = desc
+            self.count = 0
+            self.postfix = ""
+
+        def __iter__(self):
+            for item in self.iterable:
+                yield item
+                self.count += 1
+                self.refresh()
+            print(flush=True)
+
+        def set_postfix(self, values, **_kwargs):
+            self.postfix = " ".join(f"{key}={value}" for key, value in values.items())
+
+        def refresh(self):
+            print(f"\r{self.desc}: {self.count}/{self.total} {self.postfix}", end="", flush=True)
+
+        def close(self):
+            pass
+
+    def tqdm(iterable, total=None, desc="", **kwargs):
+        return _FallbackProgress(iterable, total, desc, **kwargs)
 
 from .dataset import MENTION_CLOSE, MENTION_OPEN, PAIR_FEATURE_NAMES
 from .finetuning import (
@@ -168,20 +199,26 @@ def move_batch(batch: dict, device: torch.device) -> dict:
 @torch.no_grad()
 def evaluate(model: nn.Module, loader: DataLoader, device: torch.device,
              fp16: bool = False, amp_dtype: torch.dtype = torch.float16,
-             max_steps: int | None = None) -> tuple[list[int], list[float], float]:
+             max_steps: int | None = None, desc: str = "Evaluation",
+             show_progress: bool = True) -> tuple[list[int], list[float], float]:
     model.eval()
     labels, scores, loss_sum = [], [], 0.0
     criterion = nn.BCEWithLogitsLoss(reduction="sum")
-    for step, raw_batch in enumerate(loader, 1):
-        if max_steps is not None and step > max_steps:
-            break
+    total = min(len(loader), max_steps) if max_steps is not None else len(loader)
+    progress = tqdm(islice(loader, total), total=total, desc=desc, unit="batch", disable=not show_progress)
+    for step, raw_batch in enumerate(progress, 1):
         batch = move_batch(raw_batch, device)
         with torch.autocast(device_type=device.type, dtype=amp_dtype,
                             enabled=fp16 and device.type == "cuda"):
             logits = model(batch["a"], batch["b"], batch["features"])
-        loss_sum += float(criterion(logits, batch["labels"]).item())
+        batch_loss = criterion(logits, batch["labels"])
+        loss_sum += float(batch_loss.item())
         labels.extend(batch["labels"].int().cpu().tolist())
         scores.extend(torch.sigmoid(logits).cpu().tolist())
+        if show_progress:
+            progress.set_postfix({"loss": f"{float(batch_loss.mean().item()):.4f}"})
+    if show_progress:
+        progress.close()
     return labels, scores, loss_sum / max(1, len(labels))
 
 
@@ -363,9 +400,11 @@ def train(args: argparse.Namespace) -> dict:
         model.train()
         optimizer.zero_grad(set_to_none=True)
         running_loss, examples = 0.0, 0
-        for step, raw_batch in enumerate(loaders["train"], 1):
-            if step > batches_per_epoch:
-                break
+        progress = tqdm(
+            islice(loaders["train"], batches_per_epoch), total=batches_per_epoch,
+            desc=f"Epoch {epoch}/{args.epochs}", unit="batch", disable=not args.progress,
+        )
+        for step, raw_batch in enumerate(progress, 1):
             batch = move_batch(raw_batch, device)
             with torch.autocast(device_type=device.type, dtype=amp_dtype,
                                 enabled=args.fp16 and device.type == "cuda"):
@@ -380,6 +419,8 @@ def train(args: argparse.Namespace) -> dict:
                 writer.add_scalar("loss/train_step", unscaled_loss, global_step)
                 for group in optimizer.param_groups:
                     writer.add_scalar(f"learning_rate/{group['name']}_step", group["lr"], global_step)
+            if args.progress:
+                progress.set_postfix({"loss": f"{unscaled_loss:.4f}", "lr": f"{optimizer.param_groups[-1]['lr']:.2e}"})
             if step % args.gradient_accumulation == 0 or step == batches_per_epoch:
                 scaler.unscale_(optimizer)
                 nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
@@ -389,7 +430,8 @@ def train(args: argparse.Namespace) -> dict:
                 optimizer.zero_grad(set_to_none=True)
 
         val_labels, val_scores, val_loss = evaluate(
-            model, loaders["validation"], device, args.fp16, amp_dtype, args.max_eval_steps
+            model, loaders["validation"], device, args.fp16, amp_dtype, args.max_eval_steps,
+            desc=f"Validation {epoch}/{args.epochs}", show_progress=args.progress,
         )
         threshold, val_metrics = best_threshold(val_labels, val_scores)
         memory = _memory_stats(device)
@@ -433,7 +475,8 @@ def train(args: argparse.Namespace) -> dict:
     best = torch.load(best_model_path, map_location="cpu", weights_only=False)
     _load_checkpoint_weights(model, best, mode)
     test_labels, test_scores, test_loss = evaluate(
-        model, loaders["test"], device, args.fp16, amp_dtype, args.max_eval_steps
+        model, loaders["test"], device, args.fp16, amp_dtype, args.max_eval_steps,
+        desc="Test", show_progress=args.progress,
     )
     test_metrics = binary_metrics(test_labels, test_scores, float(best["threshold"]))
     result = {"best_epoch": best["epoch"], "validation_selected_threshold": best["threshold"],
@@ -481,6 +524,8 @@ def parse_args() -> argparse.Namespace:
                         help="Keep 0 on Windows; increase only after verifying worker stability")
     parser.add_argument("--log-every", type=int, default=100,
                         help="Write batch loss and learning rates to TensorBoard every N batches")
+    parser.add_argument("--progress", action=argparse.BooleanOptionalAction, default=True,
+                        help="Show live train/validation/test progress bars")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--fp16", action=argparse.BooleanOptionalAction, default=True)
