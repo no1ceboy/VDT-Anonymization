@@ -46,6 +46,7 @@ except ImportError:  # pragma: no cover - transformers normally brings tqdm alon
         return _FallbackProgress(iterable, total, desc, **kwargs)
 
 from .dataset import MENTION_CLOSE, MENTION_OPEN, PAIR_FEATURE_NAMES
+from .raw_dataset import RAW_PAIR_FEATURE_NAMES
 from .finetuning import (
     ADAPTER_MODES,
     FINETUNE_MODES,
@@ -290,6 +291,8 @@ def train(args: argparse.Namespace) -> dict:
         feature_names = tuple()
     elif args.feature_set == "context":
         feature_names = ("same_label", "same_role", "character_distance_log_scaled")
+    elif args.feature_set == "raw":
+        feature_names = RAW_PAIR_FEATURE_NAMES
     else:
         feature_names = PAIR_FEATURE_NAMES
 
@@ -497,8 +500,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--test-pairs", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--model-name", default="NlpHUST/ner-vietnamese-electra-base")
-    parser.add_argument("--feature-set", choices=["context", "all", "embeddings_only"], default="context",
-                        help="context excludes direct marker-match flags for a fairer comparison to the rule baseline")
+    parser.add_argument("--feature-set", choices=["raw", "context", "all", "embeddings_only"], default="raw",
+                        help="raw is the production-direction profile; context/all are legacy profiles")
     parser.add_argument("--finetune-mode", choices=FINETUNE_MODES, default="fft",
                         help="fft=full fine-tuning; frozen=head only; lora/qlora=PEFT adapters")
     parser.add_argument("--lora-r", type=int, default=16)

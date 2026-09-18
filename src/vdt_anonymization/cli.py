@@ -20,7 +20,9 @@ COMMANDS = {
     "review": "vdt_anonymization.review.entity_links",
     "review-demo": "vdt_anonymization.review.demo",
     "build-linking-data": "vdt_anonymization.entity_linking.dataset",
+    "build-raw-linking-data": "vdt_anonymization.entity_linking.raw_dataset",
     "evaluate-linking-baseline": "vdt_anonymization.entity_linking.baseline",
+    "baseline-demo": "vdt_anonymization.entity_linking.baseline_demo",
     "train-linker": "vdt_anonymization.entity_linking.training",
     "eval-linker": "vdt_anonymization.entity_linking.evaluate",
 }
