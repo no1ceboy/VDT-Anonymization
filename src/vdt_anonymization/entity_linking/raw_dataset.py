@@ -329,7 +329,8 @@ def build_dataset(clean_path: Path, maps_path: Path, output_dir: Path, *,
                   context_chars: int = 160, max_positives_per_entity: int = 8,
                   negatives_per_positive: float = 1.0, min_negatives_per_document: int = 2,
                   max_pairs_per_document: int = 128, seed: str = "vdt-raw-link-v1",
-                  person_collision_rate: float = 0.30) -> dict:
+                  person_collision_rate: float = 0.30,
+                  collision_eval_rate: float = 1.0) -> dict:
     items = load_aligned(clean_path, maps_path)
     assignments = allocate_splits(items, validation_ratio, test_ratio, seed)
     staging = output_dir.with_name(output_dir.name + ".building")
@@ -339,6 +340,20 @@ def build_dataset(clean_path: Path, maps_path: Path, output_dir: Path, *,
         (staging / child).mkdir(parents=True, exist_ok=True)
     handles = {}
     counts = defaultdict(Counter)
+    # The main validation/test pairs (built above with collision_rate=0) never
+    # exercise person_collision_rate: two different people sharing a bare
+    # short alias ("An") occurs on its own in only ~0.16% of documents, so
+    # without deliberately forcing it, the eval sets almost never contain the
+    # one hard case that mechanism exists to test. This builds a *separate*,
+    # additional diagnostic file per eval split -- collision_eval_rate=1.0
+    # forces the collision on every document where it is possible at all --
+    # rather than mixing it into the main test/validation pairs, so existing
+    # metrics on those files stay exactly as they were.
+    collision_eval_handles = {
+        split: (staging / "pairs" / f"{split}_collision_eval.jsonl").open("w", encoding="utf-8")
+        for split in ("validation", "test")
+    }
+    collision_eval_counts = defaultdict(Counter)
     try:
         for split in ("train", "validation", "test"):
             for kind in ("documents", "maps", "pairs"):
@@ -364,10 +379,34 @@ def build_dataset(clean_path: Path, maps_path: Path, output_dir: Path, *,
                 counts[split]["pairs"] += 1
                 counts[split]["positive_pairs" if pair["target_linked"] else "negative_pairs"] += 1
                 counts[split][f"difficulty:{pair['difficulty']}"] += 1
-        for handle in handles.values():
+
+            if split in collision_eval_handles:
+                _, _, eval_collision_count = _collision_variant(row, mapping, seed, collision_eval_rate)
+                if eval_collision_count > 0:
+                    collision_eval_counts[split]["documents"] += 1
+                    forced_pairs = build_document_pairs(
+                        row, mapping, split, context_chars, max_positives_per_entity,
+                        negatives_per_positive, min_negatives_per_document,
+                        max_pairs_per_document, seed, collision_eval_rate,
+                    )
+                    # Isolate exactly the pairs the forced collision created:
+                    # two different PER entities now sharing identical bare
+                    # short-form text. Other pairs from the same forced-
+                    # collision variant (e.g. unrelated LOC coincidences)
+                    # belong in the main file already and would dilute this
+                    # diagnostic slice rather than sharpen it.
+                    for pair in forced_pairs:
+                        if pair["difficulty"] != "same_label_surface" or pair["mention_a"]["label"] != "PER":
+                            continue
+                        pair = dict(pair)
+                        pair["collision_eval"] = True
+                        collision_eval_handles[split].write(json.dumps(pair, ensure_ascii=False) + "\n")
+                        collision_eval_counts[split]["pairs"] += 1
+                        collision_eval_counts[split][f"target_linked:{pair['target_linked']}"] += 1
+        for handle in list(handles.values()) + list(collision_eval_handles.values()):
             handle.flush(); os.fsync(handle.fileno())
     finally:
-        for handle in handles.values():
+        for handle in list(handles.values()) + list(collision_eval_handles.values()):
             handle.close()
     manifest = {
         "dataset_version": RAW_DATASET_VERSION,
@@ -398,7 +437,15 @@ def build_dataset(clean_path: Path, maps_path: Path, output_dir: Path, *,
             "collision_applied_to_splits": ["train"],
             "collision_policy": "training-only augmentation reuses one marker-compatible short PER alias in a subset of documents; full generated names remain distinct and hidden entity_id remains the label",
         },
+        "collision_eval_policy": {
+            "purpose": "measure performance specifically on two different PER entities sharing an identical bare short-form mention (e.g. both later called just 'An') -- the one case person_collision_rate exists to test but which, unforced, occurs in only ~0.16% of documents",
+            "collision_eval_rate": collision_eval_rate,
+            "applies_to_splits": ["validation", "test"],
+            "file_pattern": "pairs/{split}_collision_eval.jsonl",
+            "content": "only pairs with difficulty=='same_label_surface' and label=='PER' from a forced-collision variant of each eligible document; the corresponding main {split}.jsonl pairs file is unchanged by this",
+        },
         "counts": {split: dict(sorted(value.items())) for split, value in sorted(counts.items())},
+        "collision_eval_counts": {split: dict(sorted(value.items())) for split, value in sorted(collision_eval_counts.items())},
         "source": {"documents": str(clean_path), "maps": str(maps_path)},
     }
     _save_json(staging / "manifest.json", manifest)
@@ -425,6 +472,9 @@ def main() -> None:
     parser.add_argument("--max-pairs-per-document", type=int, default=128)
     parser.add_argument("--person-collision-rate", type=float, default=0.30,
                         help="fraction of eligible documents with an intentional same-name person hard negative")
+    parser.add_argument("--collision-eval-rate", type=float, default=1.0,
+                        help="forced collision rate used only to build the separate validation/test "
+                             "*_collision_eval.jsonl diagnostic files; does not affect the main pairs files")
     parser.add_argument("--seed", default="vdt-raw-link-v1")
     args = parser.parse_args()
     manifest = build_dataset(
@@ -435,6 +485,7 @@ def main() -> None:
         min_negatives_per_document=args.min_negatives_per_document,
         max_pairs_per_document=args.max_pairs_per_document, seed=args.seed,
         person_collision_rate=args.person_collision_rate,
+        collision_eval_rate=args.collision_eval_rate,
     )
     print(json.dumps(manifest, ensure_ascii=False, indent=2))
 
