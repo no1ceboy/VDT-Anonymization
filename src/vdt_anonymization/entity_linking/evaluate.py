@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections import defaultdict
 from pathlib import Path
 
 import torch
@@ -20,6 +21,39 @@ from .training import (
     save_json,
 )
 from .finetuning import ADAPTER_MODES, build_encoder, compute_dtype
+
+
+def _load_pair_metadata(path: Path) -> tuple[list[str], list[str], list[str]]:
+    """Read difficulty/challenge/category tags in file order.
+
+    The loader below uses ``shuffle=False`` over a ``JsonlPairDataset`` whose
+    offsets are built in file order, so this re-read aligns positionally with
+    the ``labels``/``scores`` that :func:`training.evaluate` returns.
+    """
+    difficulties, challenges, categories = [], [], []
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            pair = json.loads(line)
+            metadata = pair.get("document_metadata") or {}
+            difficulties.append(str(pair.get("difficulty", "Unknown")))
+            challenges.append(str(metadata.get("primary_challenge", "Unknown")))
+            categories.append(str(metadata.get("category", "Unknown")))
+    return difficulties, challenges, categories
+
+
+def _grouped_metrics(labels: list[int], scores: list[float], threshold: float,
+                      groups: list[str]) -> dict[str, dict]:
+    by_group: dict[str, tuple[list[int], list[float]]] = defaultdict(lambda: ([], []))
+    for label, score, group in zip(labels, scores, groups):
+        group_labels, group_scores = by_group[group]
+        group_labels.append(label)
+        group_scores.append(score)
+    return {
+        name: binary_metrics(group_labels, group_scores, threshold)
+        for name, (group_labels, group_scores) in sorted(by_group.items())
+    }
 
 
 def run(args: argparse.Namespace) -> dict:
@@ -81,11 +115,25 @@ def run(args: argparse.Namespace) -> dict:
         pin_memory=device.type == "cuda",
     )
     labels, scores, loss = score_model(model, loader, device, args.fp16, amp_dtype, args.max_eval_steps)
+    threshold = float(checkpoint["threshold"])
+    difficulties, challenges, categories = _load_pair_metadata(args.pairs)
+    scored = len(labels)
+    if args.max_eval_steps is None and len(difficulties) != scored:
+        raise ValueError(
+            f"pair metadata count ({len(difficulties)}) does not match scored example count ({scored}); "
+            "the pairs file may have changed since the loader was built"
+        )
+    difficulties, challenges, categories = difficulties[:scored], challenges[:scored], categories[:scored]
     result = {
         "checkpoint": str(args.checkpoint),
         "pairs": str(args.pairs),
         "loss": loss,
-        "metrics": binary_metrics(labels, scores, float(checkpoint["threshold"])),
+        "metrics": {
+            "overall": binary_metrics(labels, scores, threshold),
+            "by_difficulty": _grouped_metrics(labels, scores, threshold, difficulties),
+            "by_challenge": _grouped_metrics(labels, scores, threshold, challenges),
+            "by_category": _grouped_metrics(labels, scores, threshold, categories),
+        },
         "weak_supervision_warning": "Metrics measure agreement with rule-generated pair labels.",
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
