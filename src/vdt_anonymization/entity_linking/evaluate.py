@@ -23,24 +23,19 @@ from .training import (
 from .finetuning import ADAPTER_MODES, build_encoder, compute_dtype
 
 
-def _load_pair_metadata(path: Path) -> tuple[list[str], list[str], list[str]]:
-    """Read difficulty/challenge/category tags in file order.
+def _load_pairs(path: Path) -> list[dict]:
+    """Read every pair record in file order.
 
     The loader below uses ``shuffle=False`` over a ``JsonlPairDataset`` whose
     offsets are built in file order, so this re-read aligns positionally with
     the ``labels``/``scores`` that :func:`training.evaluate` returns.
     """
-    difficulties, challenges, categories = [], [], []
+    pairs = []
     with path.open(encoding="utf-8") as handle:
         for line in handle:
-            if not line.strip():
-                continue
-            pair = json.loads(line)
-            metadata = pair.get("document_metadata") or {}
-            difficulties.append(str(pair.get("difficulty", "Unknown")))
-            challenges.append(str(metadata.get("primary_challenge", "Unknown")))
-            categories.append(str(metadata.get("category", "Unknown")))
-    return difficulties, challenges, categories
+            if line.strip():
+                pairs.append(json.loads(line))
+    return pairs
 
 
 def _grouped_metrics(labels: list[int], scores: list[float], threshold: float,
@@ -53,6 +48,54 @@ def _grouped_metrics(labels: list[int], scores: list[float], threshold: float,
     return {
         name: binary_metrics(group_labels, group_scores, threshold)
         for name, (group_labels, group_scores) in sorted(by_group.items())
+    }
+
+
+def _mention_summary(mention: dict) -> dict:
+    return {"surface": mention.get("surface"), "context": mention.get("context")}
+
+
+def _example_entry(pair: dict, label: int, score: float, threshold: float) -> dict:
+    return {
+        "pair_id": pair.get("pair_id"),
+        "doc_id": pair.get("doc_id"),
+        "difficulty": pair.get("difficulty"),
+        "document_metadata": pair.get("document_metadata"),
+        "mention_a": _mention_summary(pair.get("mention_a") or {}),
+        "mention_b": _mention_summary(pair.get("mention_b") or {}),
+        "target_linked": int(label),
+        "predicted_score": round(float(score), 4),
+        "predicted_linked": int(score >= threshold),
+    }
+
+
+def _select_examples(pairs: list[dict], labels: list[int], scores: list[float],
+                      threshold: float, max_examples: int) -> dict[str, list[dict]]:
+    """Pick a small, easy-to-copy sample of predictions to inspect by hand.
+
+    Meant for a workstation where pulling the full pairs/checkpoint back is
+    impractical: this is a handful of short text snippets, not a dataset
+    dump. False positives/negatives are sorted by how confidently the model
+    got them wrong -- those are the most informative to read first.
+    """
+    if max_examples <= 0:
+        return {}
+    rows = list(zip(pairs, labels, scores))
+    false_positives = sorted(
+        (row for row in rows if row[1] == 0 and row[2] >= threshold),
+        key=lambda row: -row[2],
+    )[:max_examples]
+    false_negatives = sorted(
+        (row for row in rows if row[1] == 1 and row[2] < threshold),
+        key=lambda row: row[2],
+    )[:max_examples]
+    true_positives = [row for row in rows if row[1] == 1 and row[2] >= threshold][:max_examples]
+    true_negatives = [row for row in rows if row[1] == 0 and row[2] < threshold][:max_examples]
+    return {
+        "false_positives_most_confident": [_example_entry(*row, threshold) for row in false_positives],
+        "false_negatives_most_confident": [_example_entry(*row, threshold) for row in false_negatives],
+        "true_positives_sample": [_example_entry(*row, threshold) for row in true_positives],
+        "true_negatives_sample": [_example_entry(*row, threshold) for row in true_negatives],
     }
 
 
@@ -116,14 +159,17 @@ def run(args: argparse.Namespace) -> dict:
     )
     labels, scores, loss = score_model(model, loader, device, args.fp16, amp_dtype, args.max_eval_steps)
     threshold = float(checkpoint["threshold"])
-    difficulties, challenges, categories = _load_pair_metadata(args.pairs)
+    pairs = _load_pairs(args.pairs)
     scored = len(labels)
-    if args.max_eval_steps is None and len(difficulties) != scored:
+    if args.max_eval_steps is None and len(pairs) != scored:
         raise ValueError(
-            f"pair metadata count ({len(difficulties)}) does not match scored example count ({scored}); "
+            f"pair count ({len(pairs)}) does not match scored example count ({scored}); "
             "the pairs file may have changed since the loader was built"
         )
-    difficulties, challenges, categories = difficulties[:scored], challenges[:scored], categories[:scored]
+    pairs = pairs[:scored]
+    difficulties = [str(pair.get("difficulty", "Unknown")) for pair in pairs]
+    challenges = [str((pair.get("document_metadata") or {}).get("primary_challenge", "Unknown")) for pair in pairs]
+    categories = [str((pair.get("document_metadata") or {}).get("category", "Unknown")) for pair in pairs]
     result = {
         "checkpoint": str(args.checkpoint),
         "pairs": str(args.pairs),
@@ -134,6 +180,7 @@ def run(args: argparse.Namespace) -> dict:
             "by_challenge": _grouped_metrics(labels, scores, threshold, challenges),
             "by_category": _grouped_metrics(labels, scores, threshold, categories),
         },
+        "examples": _select_examples(pairs, labels, scores, threshold, args.max_examples),
         "weak_supervision_warning": "Metrics measure agreement with rule-generated pair labels.",
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -156,6 +203,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--amp-dtype", choices=["fp16", "bf16"], default="bf16")
     parser.add_argument("--qlora-compute-dtype", choices=["fp16", "bf16"])
     parser.add_argument("--max-eval-steps", type=int)
+    parser.add_argument("--max-examples", type=int, default=15,
+                        help="qualitative examples per bucket to include in the output (0 disables)")
     args = parser.parse_args()
     args.checkpoint = args.checkpoint.resolve()
     args.pairs = args.pairs.resolve()
