@@ -192,8 +192,13 @@ def negative_rank(a: dict, b: dict, doc_id: str, seed: str) -> tuple:
         2 if same_label and same_family else
         3 if same_label else 4
     )
-    distance = abs(a["start"] - b["start"])
-    return (priority, distance, stable_hash(doc_id, a["start"], b["start"], seed=seed))
+    # Distance is deliberately excluded from this key. An ascending-distance
+    # tiebreak here always selected the closest available candidate first,
+    # while same-entity positive pairs (see positive_rank) span the whole
+    # document. That taught "far apart" as a proxy for "same person" -- a
+    # shortcut with nothing to do with coreference. A seeded hash keeps
+    # selection deterministic without biasing toward any distance.
+    return (priority, stable_hash(doc_id, a["start"], b["start"], seed=seed))
 
 
 def nearby_cross_entity_pairs(mentions_a: list[dict], mentions_b: list[dict], limit: int = 4) -> list[tuple[dict, dict]]:
@@ -211,6 +216,32 @@ def nearby_cross_entity_pairs(mentions_a: list[dict], mentions_b: list[dict], li
                 key = (mention_a["start"], mention_a["end"], mention_b["start"], mention_b["end"])
                 candidates[key] = (mention_a, mention_b)
     return sorted(candidates.values(), key=lambda pair: abs(pair[0]["start"] - pair[1]["start"]))[:limit]
+
+
+def cross_entity_pair_candidates(mentions_a: list[dict], mentions_b: list[dict], limit: int = 4) -> list[tuple[dict, dict]]:
+    """Distance-diverse cross-entity negative candidates.
+
+    ``nearby_cross_entity_pairs`` alone only ever returns adjacent mentions,
+    so every cross-entity negative sits close together while a single
+    entity's own mentions (positives) can span the entire document. A model
+    can then reach high accuracy by learning "far apart" implies "same
+    person" instead of reading either mention. This keeps the nearby (hard,
+    locally-confusable) candidates and adds the single most distant
+    cross-entity pair, so distant negatives exist for training to see too.
+    """
+    nearby_limit = max(1, limit - 1)
+    nearby = nearby_cross_entity_pairs(mentions_a, mentions_b, nearby_limit)
+    candidates = {
+        (a["start"], a["end"], b["start"], b["end"]): (a, b) for a, b in nearby
+    }
+    first_a, last_a = min(mentions_a, key=lambda m: m["start"]), max(mentions_a, key=lambda m: m["start"])
+    first_b, last_b = min(mentions_b, key=lambda m: m["start"]), max(mentions_b, key=lambda m: m["start"])
+    farthest = max(
+        ((first_a, last_b), (last_a, first_b)),
+        key=lambda pair: abs(pair[0]["start"] - pair[1]["start"]),
+    )
+    candidates[(farthest[0]["start"], farthest[0]["end"], farthest[1]["start"], farthest[1]["end"])] = farthest
+    return list(candidates.values())[:limit]
 
 
 def make_pair(doc_id: str, split: str, a: dict, b: dict, target: int,
@@ -262,7 +293,7 @@ def build_document_pairs(row: dict, mapping: dict, split: str, context_chars: in
     negative_candidates: list[tuple[dict, dict]] = []
     for entity_a, entity_b in combinations(sorted(mentions_by_entity), 2):
         negative_candidates.extend(
-            nearby_cross_entity_pairs(mentions_by_entity[entity_a], mentions_by_entity[entity_b])
+            cross_entity_pair_candidates(mentions_by_entity[entity_a], mentions_by_entity[entity_b])
         )
     negative_candidates.sort(key=lambda pair: negative_rank(pair[0], pair[1], doc_id, seed))
 

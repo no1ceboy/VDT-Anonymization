@@ -24,7 +24,7 @@ from .dataset import (
     MENTION_CLOSE,
     MENTION_OPEN,
     allocate_splits,
-    nearby_cross_entity_pairs,
+    cross_entity_pair_candidates,
     normalize_text,
     positive_rank,
     negative_rank,
@@ -257,7 +257,7 @@ def build_document_pairs(row: dict, mapping: dict, split: str, context_chars: in
 
     negative_candidates = []
     for entity_a, entity_b in combinations(sorted(mentions_by_entity), 2):
-        negative_candidates.extend(nearby_cross_entity_pairs(mentions_by_entity[entity_a], mentions_by_entity[entity_b]))
+        negative_candidates.extend(cross_entity_pair_candidates(mentions_by_entity[entity_a], mentions_by_entity[entity_b]))
     negative_candidates.sort(key=lambda p: negative_rank(p[0], p[1], doc_id, seed))
 
     max_positive = max(0, max_pairs_per_document - min_negatives_per_document)
