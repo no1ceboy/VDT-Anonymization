@@ -394,7 +394,16 @@ def train(args: argparse.Namespace) -> dict:
         history = resume_checkpoint.get("history", [])
         start_epoch = int(resume_checkpoint["epoch"]) + 1
 
-    writer = SummaryWriter(log_dir=str(args.output_dir / "tensorboard"), purge_step=start_epoch)
+    # purge_step must be expressed in the SAME step space as the finest-
+    # grained scalar written to this event file. "loss/train_step" and
+    # "learning_rate/*_step" use global_step = (epoch-1)*batches_per_epoch +
+    # step, not the epoch number -- passing start_epoch here (as before)
+    # would purge almost the entire per-batch curve from every completed
+    # epoch on any resume, keeping only the coarse per-epoch scalars.
+    writer = SummaryWriter(
+        log_dir=str(args.output_dir / "tensorboard"),
+        purge_step=(start_epoch - 1) * batches_per_epoch,
+    )
     best_f1 = max((epoch.get("validation", {}).get("f1", -1.0) for epoch in history), default=-1.0)
     best_model_path = args.output_dir / "best_model.pt"
     for epoch in range(start_epoch, args.epochs + 1):
