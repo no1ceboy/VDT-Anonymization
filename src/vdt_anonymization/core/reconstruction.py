@@ -20,6 +20,7 @@ from .lexicon import (
     GIVEN_NAMES,
     LOCATION_NAMES,
     NAME_PREFIX_TOKENS,
+    SKEWED_FAMILY_NAMES,
     SYNTHETIC_ORGANIZATION_NAMES,
 )
 
@@ -468,7 +469,7 @@ def person_value(doc_id,key,group,used):
     if len(prefixes)>1:return None,'conflicting_name_prefixes'
     prefix=next(iter(prefixes)) if prefixes else ''
     marker=group[0]['marker']; dotted=group[0]['encoding_scheme']=='dotted_initials'
-    families=FAMILY_NAMES
+    families=SKEWED_FAMILY_NAMES
     middles=['Thị'] if gender=='female' else ['Văn'] if gender=='male' else ['']
     neutral_pool=list(dict.fromkeys(
         n for gender_values in GIVEN_NAMES.values() for values in gender_values.values() for n in values

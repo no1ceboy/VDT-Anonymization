@@ -94,6 +94,26 @@ FAMILY_NAMES = [
     "Tống", "Tôn", "Triệu", "Từ", "Uông", "Vi", "Giàng",
 ]
 
+SKEWED_FAMILY_NAMES = (
+    ["Nguyễn"] * 38 +
+    ["Trần"] * 12 +
+    ["Lê"] * 10 +
+    ["Phạm"] * 7 +
+    ["Hoàng"] * 3 +
+    ["Huỳnh"] * 2 +
+    ["Phan"] * 4 +
+    ["Vũ"] * 2 +
+    ["Võ"] * 2 +
+    ["Đặng"] * 2 +
+    ["Bùi"] * 2 +
+    ["Đỗ"] * 1 +
+    ["Hồ"] * 1 +
+    ["Ngô"] * 1 +
+    ["Dương"] * 1 +
+    ["Lý"] * 1 +
+    ["Đoàn", "Đinh", "Tô", "Cao", "Lưu", "Trương", "Mai", "Hà", "Giang", "Chu", "Thái"]
+)
+
 FALLBACK_GIVEN_NAMES = {
     "male": ["Anh", "Bình", "Dũng", "Hải", "Hùng", "Khoa", "Long", "Minh", "Nam", "Phúc", "Quang", "Sơn", "Tuấn", "Vinh"],
     "female": ["Anh", "Bình", "Dung", "Hạnh", "Hoa", "Hương", "Lan", "Linh", "Mai", "Nga", "Ngọc", "Phương", "Trang", "Thảo", "Vy"],
