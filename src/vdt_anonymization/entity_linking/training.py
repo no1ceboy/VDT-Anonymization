@@ -45,7 +45,7 @@ except ImportError:  # pragma: no cover - transformers normally brings tqdm alon
     def tqdm(iterable, total=None, desc="", **kwargs):
         return _FallbackProgress(iterable, total, desc, **kwargs)
 
-from .dataset import MENTION_CLOSE, MENTION_OPEN, PAIR_FEATURE_NAMES
+from .dataset import MENTION_CLOSE, MENTION_OPEN
 from .raw_dataset import RAW_PAIR_FEATURE_NAMES
 from .finetuning import (
     ADAPTER_MODES,
@@ -287,14 +287,10 @@ def train(args: argparse.Namespace) -> dict:
     mode = normalize_finetune_mode(args.finetune_mode, args.freeze_encoder)
     amp_dtype = compute_dtype(args.amp_dtype)
     qlora_dtype = compute_dtype(args.qlora_compute_dtype) if args.qlora_compute_dtype else amp_dtype
-    if args.feature_set == "embeddings_only":
-        feature_names = tuple()
-    elif args.feature_set == "context":
-        feature_names = ("same_label", "same_role", "character_distance_log_scaled")
-    elif args.feature_set == "raw":
-        feature_names = RAW_PAIR_FEATURE_NAMES
-    else:
-        feature_names = PAIR_FEATURE_NAMES
+    # Production always uses the complete marker-free feature profile.  The
+    # former context/all/embeddings_only switches belonged to legacy
+    # anonymized-data experiments and are intentionally no longer exposed.
+    feature_names = RAW_PAIR_FEATURE_NAMES
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     resume_checkpoint = None
@@ -376,7 +372,7 @@ def train(args: argparse.Namespace) -> dict:
     config = {
         "architecture": "shared_encoder_mean_pool_[a,b,abs(a-b),a*b,features]_mlp",
         "model_name": args.model_name,
-        "feature_set": args.feature_set,
+        "feature_set": "production",
         "feature_names": list(feature_names),
         "max_length": args.max_length,
         "finetune_mode": mode,
@@ -509,8 +505,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--test-pairs", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--model-name", default="NlpHUST/ner-vietnamese-electra-base")
-    parser.add_argument("--feature-set", choices=["raw", "context", "all", "embeddings_only"], default="raw",
-                        help="raw is the production-direction profile; context/all are legacy profiles")
     parser.add_argument("--finetune-mode", choices=FINETUNE_MODES, default="fft",
                         help="fft=full fine-tuning; frozen=head only; lora/qlora=PEFT adapters")
     parser.add_argument("--lora-r", type=int, default=16)

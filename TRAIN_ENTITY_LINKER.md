@@ -16,7 +16,7 @@ CUDA_VISIBLE_DEVICES=0 python -m src.vdt_anonymization.entity_linking.training \
   --validation-pairs outputs/entity_linking_raw_v1/pairs/validation.jsonl \
   --test-pairs outputs/entity_linking_raw_v1/pairs/test.jsonl \
   --output-dir outputs/entity_linker_raw_frozen \
-  --feature-set raw --finetune-mode frozen \
+  --finetune-mode frozen \
   --epochs 3 --batch-size 64 --device cuda --fp16 --amp-dtype bf16
 
 # Evaluate the trained linker on the held-out raw-name test pairs.
