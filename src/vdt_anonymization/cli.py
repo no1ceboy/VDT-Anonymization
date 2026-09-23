@@ -45,3 +45,7 @@ def main() -> None:
     module = importlib.import_module(module_name)
     sys.argv = [f"vdt {command}", *sys.argv[2:]]
     module.main()
+
+
+if __name__ == "__main__":
+    main()
