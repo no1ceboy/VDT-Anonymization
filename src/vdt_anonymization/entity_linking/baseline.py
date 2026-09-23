@@ -8,10 +8,13 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from .dataset import marker_family, normalize_text
+from .location_constraints import has_explicit_province_conflict
 
 
 def predict(pair: dict, method: str) -> int:
     a, b = pair["mention_a"], pair["mention_b"]
+    if has_explicit_province_conflict(pair):
+        return 0
     same_label = a.get("label") == b.get("label")
     if method == "exact_marker":
         marker_a, marker_b = normalize_text(a.get("marker")), normalize_text(b.get("marker"))
@@ -58,6 +61,7 @@ def evaluate(path: Path, methods: list[str]) -> dict:
                 by_category[method][metadata.get("category", "Unknown")][key] += 1
     return {
         "evaluation_kind": "agreement with weak rule-generated labels; not independent human-ground-truth accuracy",
+        "location_policy": "explicit conflicting provinces force LOC pairs unlinked",
         "pair_file": str(path),
         "baselines": {
             method: {

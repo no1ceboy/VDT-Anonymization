@@ -16,6 +16,12 @@ from vdt_anonymization.entity_linking.dataset import (
 from vdt_anonymization.entity_linking.baseline import predict
 from vdt_anonymization.entity_linking.training import EntityLinkingModel, binary_metrics
 from vdt_anonymization.entity_linking.finetuning import normalize_finetune_mode, select_lora_targets
+from vdt_anonymization.entity_linking.location_constraints import (
+    explicit_province,
+    has_explicit_province_conflict,
+    location_province_features,
+)
+from vdt_anonymization.entity_linking.raw_dataset import raw_pair_features
 
 
 def replacement(text, surface, occurrence, entity_id, label="PER"):
@@ -86,6 +92,57 @@ class EntityLinkingDataTests(unittest.TestCase):
         pair = {"mention_a": base, "mention_b": other}
         self.assertEqual(predict(pair, "exact_marker"), 0)
         self.assertEqual(predict(pair, "marker_family"), 1)
+
+    def test_conflicting_explicit_provinces_veto_location_link(self):
+        a = {
+            "label": "LOC",
+            "surface": "Châu Thành",
+            "context": "Cư trú tại: Ấp Minh Tân, xã Song Thuận, huyện [MENTION]Châu Thành[/MENTION], tỉnh Tiền Giang.",
+        }
+        b = {
+            "label": "LOC",
+            "surface": "Châu Thành",
+            "context": "UBND xã An Phước, huyện [MENTION]Châu Thành[/MENTION], tỉnh Bến Tre;",
+        }
+        pair = {"mention_a": a, "mention_b": b}
+        self.assertEqual(explicit_province(a), "tiền giang")
+        self.assertEqual(explicit_province(b), "bến tre")
+        self.assertTrue(has_explicit_province_conflict(pair))
+        self.assertEqual(location_province_features(a, b)["conflicting_explicit_province"], 1.0)
+        self.assertEqual(predict(pair, "exact_surface"), 0)
+
+    def test_different_communes_in_same_province_are_not_vetoed(self):
+        a = {
+            "label": "LOC",
+            "surface": "Châu Thành",
+            "context": "xã An Phước, huyện [MENTION]Châu Thành[/MENTION], tỉnh Bến Tre.",
+        }
+        b = {
+            "label": "LOC",
+            "surface": "Châu Thành",
+            "context": "xã Tân Phú, huyện [MENTION]Châu Thành[/MENTION], tỉnh Bến Tre.",
+        }
+        self.assertFalse(has_explicit_province_conflict({"mention_a": a, "mention_b": b}))
+        self.assertEqual(location_province_features(a, b)["same_explicit_province"], 1.0)
+
+    def test_location_veto_does_not_apply_to_people_or_ambiguous_context(self):
+        person_a = {
+            "label": "PER",
+            "surface": "Nguyễn Văn An",
+            "context": "Cư trú tỉnh [MENTION]Bến Tre[/MENTION].",
+        }
+        person_b = {
+            "label": "PER",
+            "surface": "Nguyễn Văn An",
+            "context": "Cư trú tỉnh [MENTION]Tiền Giang[/MENTION].",
+        }
+        self.assertFalse(has_explicit_province_conflict({"mention_a": person_a, "mention_b": person_b}))
+        ambiguous = {
+            "label": "LOC",
+            "surface": "Châu Thành",
+            "context": "tỉnh Bến Tre và tỉnh Tiền Giang, huyện [MENTION]Châu Thành[/MENTION].",
+        }
+        self.assertIsNone(explicit_province(ambiguous))
 
     def test_binary_metrics(self):
         result = binary_metrics([1, 1, 0, 0], [0.9, 0.2, 0.8, 0.1], 0.5)

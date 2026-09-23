@@ -12,6 +12,7 @@ from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
 from .dataset import MENTION_CLOSE, MENTION_OPEN
+from .location_constraints import has_explicit_province_conflict
 from .training import (
     EntityLinkingModel,
     JsonlPairDataset,
@@ -55,7 +56,8 @@ def _mention_summary(mention: dict) -> dict:
     return {"surface": mention.get("surface"), "context": mention.get("context")}
 
 
-def _example_entry(pair: dict, label: int, score: float, threshold: float) -> dict:
+def _example_entry(pair: dict, label: int, score: float, threshold: float,
+                   location_veto: bool = False) -> dict:
     return {
         "pair_id": pair.get("pair_id"),
         "doc_id": pair.get("doc_id"),
@@ -65,12 +67,15 @@ def _example_entry(pair: dict, label: int, score: float, threshold: float) -> di
         "mention_b": _mention_summary(pair.get("mention_b") or {}),
         "target_linked": int(label),
         "predicted_score": round(float(score), 4),
-        "predicted_linked": int(score >= threshold),
+        "model_predicted_linked": int(score >= threshold),
+        "predicted_linked": int(score >= threshold and not location_veto),
+        "decision_override": "conflicting_explicit_provinces" if location_veto else None,
     }
 
 
 def _select_examples(pairs: list[dict], labels: list[int], scores: list[float],
-                      threshold: float, max_examples: int) -> dict[str, list[dict]]:
+                      threshold: float, max_examples: int,
+                      location_vetoes: list[bool] | None = None) -> dict[str, list[dict]]:
     """Pick a small, easy-to-copy sample of predictions to inspect by hand.
 
     Meant for a workstation where pulling the full pairs/checkpoint back is
@@ -80,22 +85,23 @@ def _select_examples(pairs: list[dict], labels: list[int], scores: list[float],
     """
     if max_examples <= 0:
         return {}
-    rows = list(zip(pairs, labels, scores))
+    vetoes = location_vetoes or [False] * len(pairs)
+    rows = list(zip(pairs, labels, scores, vetoes))
     false_positives = sorted(
-        (row for row in rows if row[1] == 0 and row[2] >= threshold),
+        (row for row in rows if row[1] == 0 and row[2] >= threshold and not row[3]),
         key=lambda row: -row[2],
     )[:max_examples]
     false_negatives = sorted(
-        (row for row in rows if row[1] == 1 and row[2] < threshold),
+        (row for row in rows if row[1] == 1 and (row[2] < threshold or row[3])),
         key=lambda row: row[2],
     )[:max_examples]
-    true_positives = [row for row in rows if row[1] == 1 and row[2] >= threshold][:max_examples]
-    true_negatives = [row for row in rows if row[1] == 0 and row[2] < threshold][:max_examples]
+    true_positives = [row for row in rows if row[1] == 1 and row[2] >= threshold and not row[3]][:max_examples]
+    true_negatives = [row for row in rows if row[1] == 0 and (row[2] < threshold or row[3])][:max_examples]
     return {
-        "false_positives_most_confident": [_example_entry(*row, threshold) for row in false_positives],
-        "false_negatives_most_confident": [_example_entry(*row, threshold) for row in false_negatives],
-        "true_positives_sample": [_example_entry(*row, threshold) for row in true_positives],
-        "true_negatives_sample": [_example_entry(*row, threshold) for row in true_negatives],
+        "false_positives_most_confident": [_example_entry(*row[:3], threshold, row[3]) for row in false_positives],
+        "false_negatives_most_confident": [_example_entry(*row[:3], threshold, row[3]) for row in false_negatives],
+        "true_positives_sample": [_example_entry(*row[:3], threshold, row[3]) for row in true_positives],
+        "true_negatives_sample": [_example_entry(*row[:3], threshold, row[3]) for row in true_negatives],
     }
 
 
@@ -167,6 +173,11 @@ def run(args: argparse.Namespace) -> dict:
             "the pairs file may have changed since the loader was built"
         )
     pairs = pairs[:scored]
+    location_vetoes = [has_explicit_province_conflict(pair) for pair in pairs]
+    constrained_scores = [
+        min(float(score), -1.0) if veto else float(score)
+        for score, veto in zip(scores, location_vetoes)
+    ]
     difficulties = [str(pair.get("difficulty", "Unknown")) for pair in pairs]
     challenges = [str((pair.get("document_metadata") or {}).get("primary_challenge", "Unknown")) for pair in pairs]
     categories = [str((pair.get("document_metadata") or {}).get("category", "Unknown")) for pair in pairs]
@@ -174,13 +185,25 @@ def run(args: argparse.Namespace) -> dict:
         "checkpoint": str(args.checkpoint),
         "pairs": str(args.pairs),
         "loss": loss,
+        "decision_policy": {
+            "location_veto": "force LOC pairs with different explicit provinces unlinked",
+            "location_veto_count": sum(location_vetoes),
+        },
         "metrics": {
+            "overall": binary_metrics(labels, constrained_scores, threshold),
+            "by_difficulty": _grouped_metrics(labels, constrained_scores, threshold, difficulties),
+            "by_challenge": _grouped_metrics(labels, constrained_scores, threshold, challenges),
+            "by_category": _grouped_metrics(labels, constrained_scores, threshold, categories),
+        },
+        "model_only_metrics": {
             "overall": binary_metrics(labels, scores, threshold),
             "by_difficulty": _grouped_metrics(labels, scores, threshold, difficulties),
             "by_challenge": _grouped_metrics(labels, scores, threshold, challenges),
             "by_category": _grouped_metrics(labels, scores, threshold, categories),
         },
-        "examples": _select_examples(pairs, labels, scores, threshold, args.max_examples),
+        "examples": _select_examples(
+            pairs, labels, scores, threshold, args.max_examples, location_vetoes
+        ),
         "weak_supervision_warning": "Metrics measure agreement with rule-generated pair labels.",
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
