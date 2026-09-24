@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>VDT · Manual entity review</title>
+  <link rel="stylesheet" href="/manual_linking.css">
+  <script src="/manual_linking.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">V</span><div><strong>VDT review</strong><small>Original anonymized documents</small></div></div>
+    <div class="top-progress"><span id="overallProgressText">Loading review set…</span><div class="progress-track"><div id="overallProgressBar"></div></div></div>
+    <div id="saveIndicator" class="save-indicator">Connecting…</div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-heading"><div><h2>Your documents</h2><p>Blind challenge + control sample</p></div><span id="documentCount" class="count-badge">—</span></div>
+      <div id="documentNav" class="document-nav" aria-label="Review documents"></div>
+      <div class="sidebar-foot">Progress saves automatically on this computer.</div>
+    </aside>
+
+    <main class="main">
+      <section class="intro-card">
+        <div class="eyebrow">Manual entity clustering</div>
+        <h1>Which mentions refer to the same entity?</h1>
+        <p>Work only from the masked text. Put mentions that clearly refer to one person, place, or organization in the same group. Do not link them just because the visible abbreviation matches. If the document does not let you decide, mark it uncertain.</p>
+        <div class="privacy-note"><span aria-hidden="true">●</span> Synthetic reconstructions and automated link decisions are hidden.</div>
+      </section>
+
+      <section class="document-head">
+        <div><div class="eyebrow">Current document</div><h2 id="currentDocTitle">Choose a document</h2><p id="documentSubhead">Candidate mentions are suggestions; add or correct spans when needed.</p></div>
+        <div class="doc-actions"><button id="previousDoc" class="button secondary">← Previous</button><button id="nextDoc" class="button secondary">Next →</button></div>
+      </section>
+
+      <section class="workspace">
+        <div class="source-column">
+          <div class="panel-heading"><div><h3>Original masked text</h3><p>Select text in the document to add a missed mention.</p></div><button id="addSelectedText" class="button small accent" disabled>＋ Add selected span</button></div>
+          <pre id="documentText" class="document-text" tabindex="0" aria-label="Original anonymized document">Select a document to begin.</pre>
+          <div class="source-foot"><span id="sourceLength">—</span><span>Offsets are retained for later evaluation.</span></div>
+        </div>
+
+        <div class="annotation-column">
+          <section class="panel progress-panel">
+            <div class="panel-heading compact"><div><h3>Review status</h3><p id="reviewStatusText">No document selected</p></div><span id="mentionProgress" class="count-badge">0 / 0</span></div>
+            <div class="progress-track"><div id="mentionProgressBar"></div></div>
+            <div class="status-actions"><button id="completeDocument" class="button accent">Complete review</button><button id="uncertainDocument" class="button warn">Document uncertain</button></div>
+            <label class="note-label" for="documentNote">Optional note</label><textarea id="documentNote" rows="2" placeholder="Briefly record why a case could not be resolved…"></textarea>
+          </section>
+
+          <section class="panel group-panel">
+            <div class="panel-heading compact"><div><h3>Entity groups</h3><p>Choose a group, then add selected mentions.</p></div><span id="groupCount" class="count-badge">0</span></div>
+            <div id="groupList" class="group-list"><div class="empty-state">Groups you create will appear here.</div></div>
+            <div class="group-actions"><button id="createGroup" class="button accent" disabled>Create group from selection</button><button id="addToGroup" class="button secondary" disabled>Add selection to group</button></div>
+          </section>
+
+          <section class="panel mention-panel">
+            <div class="panel-heading compact"><div><h3>Candidate mentions</h3><p>Confirm links, singletons, non-entities, or uncertainty.</p></div><span id="selectionCount" class="count-badge">0 selected</span></div>
+            <div class="mention-toolbar">
+              <button id="keepSeparate" class="button tiny secondary" disabled>Keep separate</button>
+              <button id="notEntity" class="button tiny secondary" disabled>Not an entity</button>
+              <button id="markUncertain" class="button tiny secondary" disabled>Uncertain</button>
+              <button id="markSpanError" class="button tiny secondary" disabled>Bad span</button>
+              <button id="resetDecision" class="button tiny quiet" disabled>Reset</button>
+            </div>
+            <div id="mentionList" class="mention-list"><div class="empty-state">Choose a document to inspect its candidates.</div></div>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

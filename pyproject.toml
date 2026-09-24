@@ -31,4 +31,4 @@ vdt = "vdt_anonymization.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-vdt_anonymization = ["resources/dvhcvn/*"]
+vdt_anonymization = ["resources/dvhcvn/*", "review/*.html", "review/*.css", "review/*.js"]

@@ -1,0 +1,15 @@
+{
+  "id": "no1ceboy/vdt-manual-linking-ner-pilot",
+  "title": "VDT Manual Linking NER Pilot",
+  "code_file": "kaggle_manual_linking_ner.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": "true",
+  "enable_gpu": "true",
+  "enable_internet": "true",
+  "machine_shape": "NvidiaTeslaT4",
+  "dataset_sources": [],
+  "competition_sources": [],
+  "kernel_sources": ["no1ceboy/vdt-anonymization-v3-retry"],
+  "model_sources": []
+}
