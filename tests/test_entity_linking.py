@@ -111,6 +111,31 @@ class EntityLinkingDataTests(unittest.TestCase):
         self.assertEqual(location_province_features(a, b)["conflicting_explicit_province"], 1.0)
         self.assertEqual(predict(pair, "exact_surface"), 0)
 
+    def test_v3_case_455248_uses_the_marked_address_not_the_previous_party(self):
+        a = {
+            "label": "LOC",
+            "surface": "Châu Thành",
+            "context": (
+                "Cư trú tại: Ấp Phú Bình, xã An Phước, huyện Châu Thành, tỉnh Bến Tre.\n"
+                "- Bị đơn: Anh Huỳnh Văn Phước, sinh năm 1983;\n"
+                "Cư trú tại: Ấp Minh Tân, xã Song Thuận, huyện [MENTION]Châu Thành[/MENTION], "
+                "tỉnh Tiền Giang."
+            ),
+        }
+        b = {
+            "label": "LOC",
+            "surface": "Châu Thành",
+            "context": (
+                "Nơi nhận:\n- TAND tỉnh Tiền Giang;\n- VKSND huyện Gò Công Tây;\n"
+                "- UBND xã An Phước, huyện [MENTION]Châu Thành[/MENTION], tỉnh Bến Tre."
+            ),
+        }
+        pair = {"mention_a": a, "mention_b": b}
+        self.assertEqual(explicit_province(a), "tiền giang")
+        self.assertEqual(explicit_province(b), "bến tre")
+        self.assertTrue(has_explicit_province_conflict(pair))
+        self.assertEqual(predict(pair, "exact_surface"), 0)
+
     def test_different_communes_in_same_province_are_not_vetoed(self):
         a = {
             "label": "LOC",
@@ -143,6 +168,38 @@ class EntityLinkingDataTests(unittest.TestCase):
             "context": "tỉnh Bến Tre và tỉnh Tiền Giang, huyện [MENTION]Châu Thành[/MENTION].",
         }
         self.assertIsNone(explicit_province(ambiguous))
+
+    def test_province_extraction_stops_at_official_name(self):
+        cases = {
+            "[MENTION]Bình Xuyên[/MENTION], tỉnh Vĩnh Phúc có hiệu lực thi hành.": "vĩnh phúc",
+            "[MENTION]Thanh Liêm[/MENTION], tỉnh Hà Nam theo biên bản.": "hà nam",
+            "[MENTION]Bảo Lâm[/MENTION], tỉnh Cao Bằng do Tòa án xác minh.": "cao bằng",
+            "[MENTION]Cầu Mới[/MENTION], TP. Hồ Chí Minh.": "hồ chí minh",
+            "[MENTION]Cầu Mới[/MENTION], TP.HCM.": "hồ chí minh",
+        }
+        for context, expected in cases.items():
+            with self.subTest(context=context):
+                self.assertEqual(explicit_province({"context": context}), expected)
+
+    def test_province_extraction_normalizes_dashes_and_vietnamese_diacritics(self):
+        contexts = [
+            "[MENTION]Mai Pha[/MENTION], tỉnh Bà Rịa - Vũng Tàu.",
+            "[MENTION]Mai Pha[/MENTION], tỉnh Bà Rịa–Vũng Tàu.",
+            "[MENTION]Mai Pha[/MENTION], tỉnh Ba Ria Vung Tau.",
+        ]
+        for context in contexts:
+            with self.subTest(context=context):
+                self.assertEqual(explicit_province({"context": context}), "bà rịa vũng tàu")
+
+    def test_province_extraction_is_conservative_on_unknown_or_multiple_provinces(self):
+        unknown = {"context": "[MENTION]Châu Thành[/MENTION], tỉnh Xứ Lạ."}
+        ambiguous = {
+            "context": "tỉnh Bến Tre và tỉnh Tiền Giang, huyện [MENTION]Châu Thành[/MENTION]."
+        }
+        false_word_boundary = {"context": "[MENTION]Châu Thành[/MENTION], tỉnh Bến Trex."}
+        self.assertIsNone(explicit_province(unknown))
+        self.assertIsNone(explicit_province(ambiguous))
+        self.assertIsNone(explicit_province(false_word_boundary))
 
     def test_binary_metrics(self):
         result = binary_metrics([1, 1, 0, 0], [0.9, 0.2, 0.8, 0.1], 0.5)

@@ -2,58 +2,93 @@
 
 from __future__ import annotations
 
+import csv
 import re
+import unicodedata
+from functools import lru_cache
+from pathlib import Path
 
-from .dataset import MENTION_CLOSE, MENTION_OPEN, normalize_text
+from .dataset import MENTION_CLOSE, MENTION_OPEN
 
 
-_ABBREVIATION_PERIOD = "\ue000"
-_ADMIN_ABBREVIATION = re.compile(r"\b(?:tp|p|q|h|tx)\.", re.IGNORECASE)
-_CLAUSE_BOUNDARY = re.compile(r"[;.!?\n]+")
-_PROVINCE = re.compile(
-    r"(?=\b(?:tỉnh|thành\s+phố|tp\.?)\s+"
-    r"([\wÀ-ỹĐđ]+(?:[-\s]+[\wÀ-ỹĐđ]+){0,3}))",
-    re.IGNORECASE,
-)
-_PROVINCE_STOP_WORDS = {
-    "và", "hoặc", "với", "thuộc", "tại", "tỉnh", "thành", "phố",
-    "huyện", "quận", "xã", "phường", "thị", "trấn",
-}
+_UNITS_PATH = Path(__file__).resolve().parents[1] / "resources" / "dvhcvn" / "units.tsv"
+_CLAUSE_BOUNDARY = re.compile(r"[;.!?\r\n]+")
+_TP_PERIOD = re.compile(r"\btp\.", re.IGNORECASE)
+_PROVINCE_PREFIX = re.compile(r"(?<!\w)(?:tinh|thanh\s+pho|tp)(?!\w)\s*[:,\-]?\s*", re.IGNORECASE)
+_DASHES = str.maketrans({"-": " ", "–": " ", "—": " ", "−": " "})
+
+
+def _fold(value: object) -> str:
+    """Normalize accents, case, dash variants, and spacing for lookup."""
+    text = unicodedata.normalize("NFKD", str(value or "").casefold().translate(_DASHES))
+    text = "".join(char for char in text if unicodedata.category(char) != "Mn")
+    return " ".join(text.split())
+
+
+@lru_cache(maxsize=1)
+def _province_patterns() -> tuple[tuple[re.Pattern[str], str], ...]:
+    """Compile strict aliases from the bundled, pinned province vocabulary."""
+    with _UNITS_PATH.open(encoding="utf-8", newline="") as handle:
+        provinces = [row["name"] for row in csv.DictReader(handle, delimiter="\t")
+                     if row.get("level") == "1" and row.get("name")]
+
+    aliases: dict[str, set[str]] = {}
+    for name in provinces:
+        canonical = " ".join(name.casefold().translate(_DASHES).split())
+        aliases.setdefault(_fold(name), set()).add(canonical)
+
+    # A common official-document abbreviation. Keep it scoped to an explicit
+    # TP prefix; bare "HCM" is not enough evidence to infer a province.
+    aliases.setdefault("hcm", set()).add("hồ chí minh")
+
+    patterns = []
+    for alias, canonical_names in aliases.items():
+        # Never use an accent-insensitive spelling if it could identify more
+        # than one province in the official snapshot.
+        if len(canonical_names) != 1:
+            continue
+        words = alias.split()
+        body = r"\s+".join(re.escape(word) for word in words)
+        patterns.append((re.compile(body + r"(?!\w)", re.IGNORECASE), next(iter(canonical_names))))
+    return tuple(sorted(patterns, key=lambda item: len(item[0].pattern), reverse=True))
 
 
 def explicit_province(mention: dict) -> str | None:
-    """Return a province explicitly attached to this mention's address clause.
+    """Return a province only when explicitly named in the mention's clause.
 
-    Contexts can include several addresses. Only the punctuation-delimited
-    clause containing the marked mention is considered; if it names multiple
-    provinces, the result is intentionally unknown rather than guessed.
+    The bundled vocabulary bounds the match at the official province name, so
+    nearby OCR or prose (for example ``Vĩnh Phúc có hiệu lực``) cannot become
+    part of the extracted value. If the marked clause contains an unknown or
+    conflicting province reference, return ``None`` rather than guessing.
     """
     context = str(mention.get("context") or "")
     if MENTION_OPEN not in context or MENTION_CLOSE not in context:
         return None
 
-    protected = _ADMIN_ABBREVIATION.sub(
-        lambda match: match.group(0)[:-1] + _ABBREVIATION_PERIOD, context
-    )
-    clauses = _CLAUSE_BOUNDARY.split(protected)
-    clause = next((part for part in clauses if MENTION_OPEN in part), None)
+    # Keep the period in "TP." from being mistaken for the end of a clause.
+    protected = _TP_PERIOD.sub("tp ", context)
+    clause = next((part for part in _CLAUSE_BOUNDARY.split(protected)
+                   if MENTION_OPEN in part and MENTION_CLOSE in part), None)
     if clause is None:
         return None
 
     plain = clause.replace(MENTION_OPEN, "").replace(MENTION_CLOSE, "")
-    plain = plain.replace(_ABBREVIATION_PERIOD, ".")
-    provinces = set()
-    for match in _PROVINCE.finditer(plain):
-        words = re.findall(r"[\wÀ-ỹĐđ]+", match.group(1))
-        stop_at = next(
-            (index for index, word in enumerate(words) if normalize_text(word) in _PROVINCE_STOP_WORDS),
-            len(words),
-        )
-        province = normalize_text(" ".join(words[:stop_at]))
-        if province:
-            provinces.add(province)
-    provinces.discard("")
-    return next(iter(provinces)) if len(provinces) == 1 else None
+    normalized = _fold(plain)
+    provinces: set[str] = set()
+    prefix_count = 0
+    for prefix in _PROVINCE_PREFIX.finditer(normalized):
+        prefix_count += 1
+        tail = normalized[prefix.end():]
+        matched = next(((match, canonical) for pattern, canonical in _province_patterns()
+                        if (match := pattern.match(tail))), None)
+        if matched is None:
+            return None
+        _, canonical = matched
+        provinces.add(canonical)
+
+    if prefix_count == 0 or len(provinces) != 1:
+        return None
+    return next(iter(provinces))
 
 
 def has_explicit_province_conflict(pair: dict) -> bool:
