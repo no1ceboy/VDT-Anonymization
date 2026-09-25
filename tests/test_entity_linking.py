@@ -14,6 +14,7 @@ from vdt_anonymization.entity_linking.dataset import (
     pair_features,
 )
 from vdt_anonymization.entity_linking.baseline import predict
+from vdt_anonymization.entity_linking.evaluate import _link_error_summary
 from vdt_anonymization.entity_linking.training import EntityLinkingModel, binary_metrics
 from vdt_anonymization.entity_linking.finetuning import normalize_finetune_mode, select_lora_targets
 from vdt_anonymization.entity_linking.location_constraints import (
@@ -32,6 +33,17 @@ def replacement(text, surface, occurrence, entity_id, label="PER"):
 
 
 class EntityLinkingDataTests(unittest.TestCase):
+    def test_negative_only_collision_summary_reports_false_link_rate(self):
+        labels = [0] * 23
+        scores = [0.2] * 22 + [0.9]
+        summary = _link_error_summary(labels, scores, 0.55)
+
+        self.assertEqual(summary["different_entity_pairs"], 23)
+        self.assertEqual(summary["false_links"], 1)
+        self.assertEqual(summary["correctly_kept_separate"], 22)
+        self.assertAlmostEqual(summary["false_link_rate"], 1 / 23)
+        self.assertEqual(summary["same_entity_pairs"], 0)
+
     def test_document_split_is_deterministic_and_disjoint(self):
         items = [
             {

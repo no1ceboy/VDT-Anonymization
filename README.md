@@ -228,79 +228,22 @@ for evaluation only. `manifest.json` records selection policy and distributions.
 
 ## Entity-linking experiment
 
-For a copy-and-run Windows workstation setup, use
-[`TRAIN_ENTITY_LINKER.md`](TRAIN_ENTITY_LINKER.md).
+The prepared V3 pair splits are in
+`outputs/entity_linking_v3_location_strict_20260924/pairs/`: 221,502 train,
+26,581 validation, and 26,124 test pairs. The separate
+`test_collision_eval.jsonl` has 23 deliberately colliding, different-person
+pairs. Copy these files to the training machine; generated `outputs/` files
+are not stored in Git.
 
-Create deterministic, document-disjoint train/validation/test splits from a
-clean dataset and its aligned compact maps:
-
-```powershell
-vdt build-linking-data `
-  --clean-input outputs/kaggle_clean_10k/vdt_clean_10k/filtered_v1/clean_filtered.jsonl `
-  --maps-input outputs/kaggle_clean_10k/vdt_clean_10k/filtered_v1/clean_filtered_maps.jsonl `
-  --output-dir outputs/entity_linking_v1
-```
-
-The builder writes the original documents, aligned maps, and bounded mention
-pairs under separate `documents`, `maps`, and `pairs` directories. Splitting is
-by complete document and stratified by category, court instance, and primary
-challenge. Positive pair labels mean the existing rule linker assigned both
-source spans the same entity ID; negatives use different within-document IDs,
-with same-label and same-marker-family conflicts selected first. These are weak
-labels, not independently reviewed ground truth. Pair inputs include only the
-original anonymized context and never the synthetic replacement value.
-
-Measure rule agreement on the held-out test pairs:
-
-```powershell
-vdt evaluate-linking-baseline `
-  --pairs outputs/entity_linking_v1/pairs/test.jsonl `
-  --output outputs/entity_linking_v1/baseline_test.json
-```
-
-On the training workstation, install the package with `python -m pip install .`
-and fine-tune the shared Vietnamese encoder plus pair MLP. The trainer supports
-`fft` (full fine-tuning), `frozen` (head only), `lora`, and `qlora` (4-bit NF4
-base plus LoRA). Install `python -m pip install ".[efficient]"` for the last
-two modes.
-
-```powershell
-vdt train-linker `
-  --train-pairs outputs/entity_linking_v1/pairs/train.jsonl `
-  --validation-pairs outputs/entity_linking_v1/pairs/validation.jsonl `
-  --test-pairs outputs/entity_linking_v1/pairs/test.jsonl `
-  --output-dir outputs/entity_linker_model `
-  --model-name NlpHUST/ner-vietnamese-electra-base `
-  --feature-set context --finetune-mode fft --epochs 3 --batch-size 16 `
-  --device cuda --fp16 --amp-dtype bf16
-```
-
-For an inexpensive pilot, add `--max-train-steps 200 --max-eval-steps 100
---epochs 1`. On one GPU, run ablations sequentially in separate output
-directories; parallel jobs compete for HBM. Peak allocated and reserved GPU
-memory are recorded in TensorBoard and `training_history.json` so batch size
-can be increased to the largest stable value without chasing an out-of-memory
-failure.
-
-`--model-name` may instead point to an already downloaded local model directory
-for an offline company machine. The trainer writes an interruption-safe
-`last_checkpoint.pt` after every epoch; resume with
-`--resume outputs/entity_linker_model/last_checkpoint.pt`. Metrics are also
-logged to TensorBoard:
-
-```powershell
-tensorboard --logdir outputs/entity_linker_model/tensorboard
-```
-
-TensorBoard writes local event files only; this pipeline does not configure an
-external experiment-tracking service or upload company data.
-
-The validation split selects the decision threshold; the test split is read
-only for final metrics. Keep the rule baseline result labeled as weak-label
-agreement because the training labels themselves originate from that linker.
-The default `context` feature set deliberately omits direct marker-equality
-flags, making comparison with the exact-marker rule less circular. Use `all`
-only for a deployment-oriented hybrid model after measuring that comparison.
+This is a **pairwise pilot**, not a document-level clustering model. Inputs use
+reconstructed pseudonyms; pair labels come from the rule-based reconstruction
+linker. Metrics therefore measure agreement with weak labels, not independent
+human-ground-truth accuracy. The validation split selects the threshold. The
+evaluator reports test metrics by difficulty, and accepts `--collision-pairs`
+to report the false-link count and rate on the separate collision diagnostic.
+That diagnostic is negative-only, so its F1 is not a useful success measure.
+Use [`TRAIN_ENTITY_LINKER.md`](TRAIN_ENTITY_LINKER.md) for current copy-and-run
+commands. No V3 pair rebuild is needed.
 
 ## Pipeline
 

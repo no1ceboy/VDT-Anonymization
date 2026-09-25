@@ -52,6 +52,24 @@ def _grouped_metrics(labels: list[int], scores: list[float], threshold: float,
     }
 
 
+def _link_error_summary(labels: list[int], scores: list[float], threshold: float,
+                        vetoes: list[bool] | None = None) -> dict:
+    """Report false merges directly, including for negative-only challenge sets."""
+    vetoes = vetoes or [False] * len(labels)
+    negative_count = sum(label == 0 for label in labels)
+    false_links = sum(
+        label == 0 and score >= threshold and not veto
+        for label, score, veto in zip(labels, scores, vetoes)
+    )
+    return {
+        "different_entity_pairs": negative_count,
+        "false_links": false_links,
+        "correctly_kept_separate": negative_count - false_links,
+        "false_link_rate": false_links / negative_count if negative_count else None,
+        "same_entity_pairs": sum(label == 1 for label in labels),
+    }
+
+
 def _mention_summary(mention: dict) -> dict:
     return {"surface": mention.get("surface"), "context": mention.get("context")}
 
@@ -206,6 +224,72 @@ def run(args: argparse.Namespace) -> dict:
         ),
         "weak_supervision_warning": "Metrics measure agreement with rule-generated pair labels.",
     }
+    if args.collision_pairs:
+        collision_dataset = JsonlPairDataset(args.collision_pairs)
+        collision_loader = DataLoader(
+            collision_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            collate_fn=collator,
+            pin_memory=device.type == "cuda",
+        )
+        collision_labels, collision_scores, collision_loss = score_model(
+            model, collision_loader, device, args.fp16, amp_dtype, args.max_eval_steps
+        )
+        collision_pairs = _load_pairs(args.collision_pairs)
+        if args.max_eval_steps is None and len(collision_pairs) != len(collision_labels):
+            raise ValueError(
+                "collision pair count does not match scored example count; "
+                "the pair file may have changed since the loader was built"
+            )
+        collision_pairs = collision_pairs[:len(collision_labels)]
+        collision_vetoes = [has_explicit_province_conflict(pair) for pair in collision_pairs]
+        collision_constrained_scores = [
+            min(float(score), -1.0) if veto else float(score)
+            for score, veto in zip(collision_scores, collision_vetoes)
+        ]
+        collision_difficulties = [str(pair.get("difficulty", "Unknown")) for pair in collision_pairs]
+        collision_challenges = [
+            str((pair.get("document_metadata") or {}).get("primary_challenge", "Unknown"))
+            for pair in collision_pairs
+        ]
+        collision_categories = [
+            str((pair.get("document_metadata") or {}).get("category", "Unknown"))
+            for pair in collision_pairs
+        ]
+        collision_warning = None
+        if not any(collision_labels):
+            collision_warning = (
+                "This collision file has no same-entity pairs; use false_links and "
+                "false_link_rate to measure bad merges. Positive-class F1 is not informative here."
+            )
+        result["collision_evaluation"] = {
+            "pairs": str(args.collision_pairs),
+            "loss": collision_loss,
+            "decision_policy": {
+                "location_veto_count": sum(collision_vetoes),
+                "threshold": threshold,
+            },
+            "metrics": {
+                "overall": binary_metrics(collision_labels, collision_constrained_scores, threshold),
+                "by_difficulty": _grouped_metrics(
+                    collision_labels, collision_constrained_scores, threshold, collision_difficulties
+                ),
+                "by_challenge": _grouped_metrics(
+                    collision_labels, collision_constrained_scores, threshold, collision_challenges
+                ),
+                "by_category": _grouped_metrics(
+                    collision_labels, collision_constrained_scores, threshold, collision_categories
+                ),
+            },
+            "model_only_metrics": binary_metrics(collision_labels, collision_scores, threshold),
+            "link_errors_after_location_rule": _link_error_summary(
+                collision_labels, collision_scores, threshold, collision_vetoes
+            ),
+            "link_errors_model_only": _link_error_summary(collision_labels, collision_scores, threshold),
+            "warning": collision_warning,
+        }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     save_json(args.output, result)
     return result
@@ -215,6 +299,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", required=True, type=Path)
     parser.add_argument("--pairs", required=True, type=Path)
+    parser.add_argument("--collision-pairs", type=Path,
+                        help="optional separate hard-collision pairs file; scored at the validation-selected threshold")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--model-name", help="override the encoder model ID/path stored in the checkpoint")
     parser.add_argument("--tokenizer", type=Path)
@@ -231,9 +317,12 @@ def parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     args.checkpoint = args.checkpoint.resolve()
     args.pairs = args.pairs.resolve()
+    if args.collision_pairs:
+        args.collision_pairs = args.collision_pairs.resolve()
     args.output = args.output.resolve()
-    if not args.checkpoint.is_file() or not args.pairs.is_file():
-        parser.error("checkpoint and pair files must exist")
+    if (not args.checkpoint.is_file() or not args.pairs.is_file()
+            or (args.collision_pairs and not args.collision_pairs.is_file())):
+        parser.error("checkpoint and all requested pair files must exist")
     if args.batch_size < 1 or args.num_workers < 0 or (args.max_length is not None and args.max_length < 16):
         parser.error("batch size must be positive, workers non-negative, and max length >=16")
     if args.max_eval_steps is not None and args.max_eval_steps < 1:
