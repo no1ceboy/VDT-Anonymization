@@ -8,13 +8,16 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from .dataset import marker_family, normalize_text
-from .location_constraints import has_explicit_province_conflict
+from .location_constraints import location_rule_decision
 
 
 def predict(pair: dict, method: str) -> int:
     a, b = pair["mention_a"], pair["mention_b"]
-    if has_explicit_province_conflict(pair):
+    location_decision = location_rule_decision(pair)
+    if location_decision == "block":
         return 0
+    if location_decision == "link":
+        return 1
     same_label = a.get("label") == b.get("label")
     if method == "exact_marker":
         marker_a, marker_b = normalize_text(a.get("marker")), normalize_text(b.get("marker"))
@@ -47,10 +50,21 @@ def evaluate(path: Path, methods: list[str]) -> dict:
     by_difficulty = {method: defaultdict(Counter) for method in methods}
     by_challenge = {method: defaultdict(Counter) for method in methods}
     by_category = {method: defaultdict(Counter) for method in methods}
+    location_rules = Counter()
+    location_rule_disagreements = Counter()
+    pair_count = 0
     with path.open(encoding="utf-8") as handle:
         for line in handle:
             pair = json.loads(line)
+            pair_count += 1
             target = int(pair["target_linked"])
+            decision = location_rule_decision(pair)
+            if decision:
+                location_rules[decision] += 1
+                if decision == "block" and target == 1:
+                    location_rule_disagreements["blocked_weak_positive"] += 1
+                elif decision == "link" and target == 0:
+                    location_rule_disagreements["linked_weak_negative"] += 1
             for method in methods:
                 prediction = predict(pair, method)
                 key = "tp" if target and prediction else "fn" if target else "fp" if prediction else "tn"
@@ -61,7 +75,18 @@ def evaluate(path: Path, methods: list[str]) -> dict:
                 by_category[method][metadata.get("category", "Unknown")][key] += 1
     return {
         "evaluation_kind": "agreement with weak rule-generated labels; not independent human-ground-truth accuracy",
-        "location_policy": "explicit conflicting provinces force LOC pairs unlinked",
+        "location_policy": (
+            "LOC only: canonical same-unit matches link, contradictory administrative paths block, "
+            "uncertain parses defer to the selected baseline; NER type is authoritative"
+        ),
+        "location_rule_counts": {
+            "total_pairs": pair_count,
+            "decided_pairs": sum(location_rules.values()),
+            "links": location_rules["link"],
+            "blocks": location_rules["block"],
+            "deferred_pairs": pair_count - sum(location_rules.values()),
+            "weak_label_disagreements": dict(sorted(location_rule_disagreements.items())),
+        },
         "pair_file": str(path),
         "baselines": {
             method: {

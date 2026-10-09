@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
 from .dataset import MENTION_CLOSE, MENTION_OPEN
-from .location_constraints import has_explicit_province_conflict
+from .location_constraints import location_rule_decision
 from .training import (
     EntityLinkingModel,
     JsonlPairDataset,
@@ -53,13 +53,15 @@ def _grouped_metrics(labels: list[int], scores: list[float], threshold: float,
 
 
 def _link_error_summary(labels: list[int], scores: list[float], threshold: float,
-                        vetoes: list[bool] | None = None) -> dict:
+                        vetoes: list[bool] | None = None,
+                        rule_decisions: list[str | None] | None = None) -> dict:
     """Report false merges directly, including for negative-only challenge sets."""
     vetoes = vetoes or [False] * len(labels)
+    rules = rule_decisions or [None] * len(labels)
     negative_count = sum(label == 0 for label in labels)
     false_links = sum(
-        label == 0 and score >= threshold and not veto
-        for label, score, veto in zip(labels, scores, vetoes)
+        label == 0 and _effective_prediction(score, threshold, veto, rule)
+        for label, score, veto, rule in zip(labels, scores, vetoes, rules)
     )
     return {
         "different_entity_pairs": negative_count,
@@ -70,12 +72,23 @@ def _link_error_summary(labels: list[int], scores: list[float], threshold: float
     }
 
 
+def _effective_prediction(score: float, threshold: float, veto: bool,
+                          rule: str | None) -> bool:
+    if rule == "link":
+        return True
+    if rule == "block" or veto:
+        return False
+    return score >= threshold
+
+
 def _mention_summary(mention: dict) -> dict:
     return {"surface": mention.get("surface"), "context": mention.get("context")}
 
 
 def _example_entry(pair: dict, label: int, score: float, threshold: float,
-                   location_veto: bool = False) -> dict:
+                   location_veto: bool = False,
+                   location_rule: str | None = None) -> dict:
+    predicted_linked = _effective_prediction(score, threshold, location_veto, location_rule)
     return {
         "pair_id": pair.get("pair_id"),
         "doc_id": pair.get("doc_id"),
@@ -86,14 +99,18 @@ def _example_entry(pair: dict, label: int, score: float, threshold: float,
         "target_linked": int(label),
         "predicted_score": round(float(score), 4),
         "model_predicted_linked": int(score >= threshold),
-        "predicted_linked": int(score >= threshold and not location_veto),
-        "decision_override": "conflicting_explicit_provinces" if location_veto else None,
+        "predicted_linked": int(predicted_linked),
+        "decision_override": (
+            "same_canonical_location" if location_rule == "link" else
+            "conflicting_location_hierarchy" if location_rule == "block" or location_veto else None
+        ),
     }
 
 
 def _select_examples(pairs: list[dict], labels: list[int], scores: list[float],
                       threshold: float, max_examples: int,
-                      location_vetoes: list[bool] | None = None) -> dict[str, list[dict]]:
+                      location_vetoes: list[bool] | None = None,
+                      location_rules: list[str | None] | None = None) -> dict[str, list[dict]]:
     """Pick a small, easy-to-copy sample of predictions to inspect by hand.
 
     Meant for a workstation where pulling the full pairs/checkpoint back is
@@ -104,22 +121,33 @@ def _select_examples(pairs: list[dict], labels: list[int], scores: list[float],
     if max_examples <= 0:
         return {}
     vetoes = location_vetoes or [False] * len(pairs)
-    rows = list(zip(pairs, labels, scores, vetoes))
+    rules = location_rules or [None] * len(pairs)
+    rows = list(zip(pairs, labels, scores, vetoes, rules))
     false_positives = sorted(
-        (row for row in rows if row[1] == 0 and row[2] >= threshold and not row[3]),
+        (row for row in rows if row[1] == 0 and (
+            row[4] == "link" or (row[4] is None and row[2] >= threshold and not row[3])
+        )),
         key=lambda row: -row[2],
     )[:max_examples]
     false_negatives = sorted(
-        (row for row in rows if row[1] == 1 and (row[2] < threshold or row[3])),
+        (row for row in rows if row[1] == 1 and not (
+            row[4] == "link" or (row[4] is None and row[2] >= threshold and not row[3])
+        )),
         key=lambda row: row[2],
     )[:max_examples]
-    true_positives = [row for row in rows if row[1] == 1 and row[2] >= threshold and not row[3]][:max_examples]
-    true_negatives = [row for row in rows if row[1] == 0 and (row[2] < threshold or row[3])][:max_examples]
+    true_positives = [
+        row for row in rows if row[1] == 1
+        and _effective_prediction(row[2], threshold, row[3], row[4])
+    ][:max_examples]
+    true_negatives = [
+        row for row in rows if row[1] == 0
+        and not _effective_prediction(row[2], threshold, row[3], row[4])
+    ][:max_examples]
     return {
-        "false_positives_most_confident": [_example_entry(*row[:3], threshold, row[3]) for row in false_positives],
-        "false_negatives_most_confident": [_example_entry(*row[:3], threshold, row[3]) for row in false_negatives],
-        "true_positives_sample": [_example_entry(*row[:3], threshold, row[3]) for row in true_positives],
-        "true_negatives_sample": [_example_entry(*row[:3], threshold, row[3]) for row in true_negatives],
+        "false_positives_most_confident": [_example_entry(*row[:3], threshold, row[3], row[4]) for row in false_positives],
+        "false_negatives_most_confident": [_example_entry(*row[:3], threshold, row[3], row[4]) for row in false_negatives],
+        "true_positives_sample": [_example_entry(*row[:3], threshold, row[3], row[4]) for row in true_positives],
+        "true_negatives_sample": [_example_entry(*row[:3], threshold, row[3], row[4]) for row in true_negatives],
     }
 
 
@@ -191,10 +219,11 @@ def run(args: argparse.Namespace) -> dict:
             "the pairs file may have changed since the loader was built"
         )
     pairs = pairs[:scored]
-    location_vetoes = [has_explicit_province_conflict(pair) for pair in pairs]
+    location_rules = [location_rule_decision(pair) for pair in pairs]
+    location_vetoes = [decision == "block" for decision in location_rules]
     constrained_scores = [
-        min(float(score), -1.0) if veto else float(score)
-        for score, veto in zip(scores, location_vetoes)
+        2.0 if decision == "link" else -1.0 if decision == "block" else float(score)
+        for score, decision in zip(scores, location_rules)
     ]
     difficulties = [str(pair.get("difficulty", "Unknown")) for pair in pairs]
     challenges = [str((pair.get("document_metadata") or {}).get("primary_challenge", "Unknown")) for pair in pairs]
@@ -204,8 +233,23 @@ def run(args: argparse.Namespace) -> dict:
         "pairs": str(args.pairs),
         "loss": loss,
         "decision_policy": {
-            "location_veto": "force LOC pairs with different explicit provinces unlinked",
-            "location_veto_count": sum(location_vetoes),
+            "location_rules": (
+                "for LOC only: link unique same canonical unit; block contradictory admin paths; "
+                "defer ambiguous/partial matches to model; NER label is authoritative"
+            ),
+            "location_rule_links": location_rules.count("link"),
+            "location_rule_blocks": location_rules.count("block"),
+            "location_rule_deferred": location_rules.count(None),
+            "weak_label_disagreements": {
+                "blocked_weak_positive": sum(
+                    decision == "block" and int(pair["target_linked"]) == 1
+                    for pair, decision in zip(pairs, location_rules)
+                ),
+                "linked_weak_negative": sum(
+                    decision == "link" and int(pair["target_linked"]) == 0
+                    for pair, decision in zip(pairs, location_rules)
+                ),
+            },
         },
         "metrics": {
             "overall": binary_metrics(labels, constrained_scores, threshold),
@@ -220,7 +264,7 @@ def run(args: argparse.Namespace) -> dict:
             "by_category": _grouped_metrics(labels, scores, threshold, categories),
         },
         "examples": _select_examples(
-            pairs, labels, scores, threshold, args.max_examples, location_vetoes
+            pairs, labels, scores, threshold, args.max_examples, location_vetoes, location_rules
         ),
         "weak_supervision_warning": "Metrics measure agreement with rule-generated pair labels.",
     }
@@ -244,10 +288,11 @@ def run(args: argparse.Namespace) -> dict:
                 "the pair file may have changed since the loader was built"
             )
         collision_pairs = collision_pairs[:len(collision_labels)]
-        collision_vetoes = [has_explicit_province_conflict(pair) for pair in collision_pairs]
+        collision_rules = [location_rule_decision(pair) for pair in collision_pairs]
+        collision_vetoes = [decision == "block" for decision in collision_rules]
         collision_constrained_scores = [
-            min(float(score), -1.0) if veto else float(score)
-            for score, veto in zip(collision_scores, collision_vetoes)
+            2.0 if decision == "link" else -1.0 if decision == "block" else float(score)
+            for score, decision in zip(collision_scores, collision_rules)
         ]
         collision_difficulties = [str(pair.get("difficulty", "Unknown")) for pair in collision_pairs]
         collision_challenges = [
@@ -268,7 +313,19 @@ def run(args: argparse.Namespace) -> dict:
             "pairs": str(args.collision_pairs),
             "loss": collision_loss,
             "decision_policy": {
-                "location_veto_count": sum(collision_vetoes),
+                "location_rule_links": collision_rules.count("link"),
+                "location_rule_blocks": collision_rules.count("block"),
+                "location_rule_deferred": collision_rules.count(None),
+                "weak_label_disagreements": {
+                    "blocked_weak_positive": sum(
+                        decision == "block" and int(pair["target_linked"]) == 1
+                        for pair, decision in zip(collision_pairs, collision_rules)
+                    ),
+                    "linked_weak_negative": sum(
+                        decision == "link" and int(pair["target_linked"]) == 0
+                        for pair, decision in zip(collision_pairs, collision_rules)
+                    ),
+                },
                 "threshold": threshold,
             },
             "metrics": {
@@ -285,7 +342,7 @@ def run(args: argparse.Namespace) -> dict:
             },
             "model_only_metrics": binary_metrics(collision_labels, collision_scores, threshold),
             "link_errors_after_location_rule": _link_error_summary(
-                collision_labels, collision_scores, threshold, collision_vetoes
+                collision_labels, collision_scores, threshold, collision_vetoes, collision_rules
             ),
             "link_errors_model_only": _link_error_summary(collision_labels, collision_scores, threshold),
             "warning": collision_warning,
@@ -308,8 +365,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-length", type=int)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--device", default="auto")
-    parser.add_argument("--fp16", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--amp-dtype", choices=["fp16", "bf16"], default="bf16")
+    parser.add_argument("--fp16", action=argparse.BooleanOptionalAction, default=True,
+                        help="Enable mixed-precision autocast; --amp-dtype selects fp16 or bf16")
+    parser.add_argument("--amp-dtype", choices=["fp16", "bf16"], default="bf16",
+                        help="B200 recommendation: bf16; --no-fp16 disables autocast")
     parser.add_argument("--qlora-compute-dtype", choices=["fp16", "bf16"])
     parser.add_argument("--max-eval-steps", type=int)
     parser.add_argument("--max-examples", type=int, default=15,

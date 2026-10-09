@@ -14,6 +14,11 @@ from vdt_anonymization.entity_linking.dataset import (
     pair_features,
 )
 from vdt_anonymization.entity_linking.baseline import predict
+from vdt_anonymization.entity_linking.clustering import (
+    aggregate_cluster_metrics,
+    cluster_metrics,
+    complete_link_clusters,
+)
 from vdt_anonymization.entity_linking.evaluate import _link_error_summary
 from vdt_anonymization.entity_linking.training import EntityLinkingModel, binary_metrics
 from vdt_anonymization.entity_linking.finetuning import normalize_finetune_mode, select_lora_targets
@@ -33,6 +38,35 @@ def replacement(text, surface, occurrence, entity_id, label="PER"):
 
 
 class EntityLinkingDataTests(unittest.TestCase):
+    def test_complete_link_prevents_transitive_chain_merge(self):
+        mentions = [
+            {"label": "PER", "start": 0},
+            {"label": "PER", "start": 10},
+            {"label": "PER", "start": 20},
+        ]
+        scores = {(0, 1): 0.95, (0, 2): 0.20, (1, 2): 0.90}
+        clusters = complete_link_clusters(mentions, scores, threshold=0.80)
+        self.assertEqual(clusters, [[0, 1], [2]])
+
+    def test_clustering_never_crosses_entity_types_or_cannot_link(self):
+        mentions = [
+            {"label": "LOC", "start": 0},
+            {"label": "LOC", "start": 10},
+            {"label": "PER", "start": 20},
+        ]
+        scores = {(0, 1): 0.99, (0, 2): 0.99, (1, 2): 0.99}
+        clusters = complete_link_clusters(mentions, scores, threshold=0.5, cannot_link={(0, 1)})
+        self.assertEqual(clusters, [[0], [1], [2]])
+
+    def test_cluster_metrics_report_b_cubed_and_pairwise_quality(self):
+        gold = ["A", "A", "B"]
+        predicted = [[0, 1], [2]]
+        metrics = cluster_metrics(gold, predicted)
+        self.assertEqual(metrics["b_cubed_f1"], 1.0)
+        self.assertEqual(metrics["pairwise_counts"], {"tp": 1, "fp": 0, "fn": 0})
+        aggregate = aggregate_cluster_metrics([metrics])
+        self.assertEqual(aggregate["b_cubed"]["f1"], 1.0)
+
     def test_negative_only_collision_summary_reports_false_link_rate(self):
         labels = [0] * 23
         scores = [0.2] * 22 + [0.9]

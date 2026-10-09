@@ -1,1 +1,1 @@
-"""Entity-linking pair construction, baselines, and model training."""
+"""Entity-linking data, pair scoring, document clustering, and evaluation."""

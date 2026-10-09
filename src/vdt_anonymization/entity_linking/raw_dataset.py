@@ -1,9 +1,8 @@
-"""Build marker-free entity-linking data from reconstructed, name-bearing text.
+"""Shared pair features plus the legacy raw-v2 pair-data builder.
 
-The anonymized source and reconstruction map provide weak supervision only:
-the model input is ``synthetic_markdown`` and the hidden reconstruction
-entity_id supplies positive/negative pair labels. Marker strings are never
-copied into contexts or handcrafted features.
+V4 reuses ``RAW_PAIR_FEATURE_NAMES`` and ``raw_pair_features`` but builds
+examples from original anonymized text. Generated/reconstructed names are not
+part of the V4 model input.
 """
 
 from __future__ import annotations
@@ -31,7 +30,7 @@ from .dataset import (
     row_id,
     stable_hash,
 )
-from .location_constraints import location_province_features
+from .location_constraints import location_pair_features, location_province_features
 
 
 RAW_DATASET_VERSION = "entity-linking-raw-v2"
@@ -45,6 +44,12 @@ RAW_PAIR_FEATURE_NAMES = (
     "character_distance_log_scaled",
     "same_explicit_province",
     "conflicting_explicit_province",
+    "same_admin_unit",
+    "same_admin_level",
+    "same_admin_name_level",
+    "same_admin_parent",
+    "conflicting_admin_path",
+    "fuzzy_admin_match",
 )
 
 
@@ -211,6 +216,7 @@ def raw_pair_features(text: str, a: dict, b: dict) -> dict[str, float]:
         "same_last_token": float(bool(tokens_a and tokens_b and tokens_a[-1] == tokens_b[-1])),
         "character_distance_log_scaled": min(math.log1p(distance) / 10.0, 1.0),
         **location_province_features(a, b),
+        **location_pair_features(a, b),
     }
 
 

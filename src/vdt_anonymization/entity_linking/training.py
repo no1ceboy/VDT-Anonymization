@@ -145,14 +145,20 @@ class EntityLinkingModel(nn.Module):
         result = self.encoder(**batch)
         return self.mean_pool(result.last_hidden_state, batch["attention_mask"])
 
-    def forward(self, a: dict[str, torch.Tensor], b: dict[str, torch.Tensor],
-                features: torch.Tensor) -> torch.Tensor:
-        embedding_a, embedding_b = self.encode(a), self.encode(b)
+    def classify_embeddings(self, embedding_a: torch.Tensor, embedding_b: torch.Tensor,
+                            features: torch.Tensor) -> torch.Tensor:
+        """Score already-encoded mentions; document inference encodes each mention once."""
         pair = torch.cat(
-            [embedding_a, embedding_b, torch.abs(embedding_a - embedding_b), embedding_a * embedding_b, features],
+            [embedding_a, embedding_b, torch.abs(embedding_a - embedding_b),
+             embedding_a * embedding_b, features],
             dim=-1,
         )
         return self.classifier(pair).squeeze(-1)
+
+    def forward(self, a: dict[str, torch.Tensor], b: dict[str, torch.Tensor],
+                features: torch.Tensor) -> torch.Tensor:
+        embedding_a, embedding_b = self.encode(a), self.encode(b)
+        return self.classify_embeddings(embedding_a, embedding_b, features)
 
 
 def binary_metrics(labels: list[int], scores: list[float], threshold: float) -> dict:
@@ -534,7 +540,8 @@ def parse_args() -> argparse.Namespace:
                         help="Show live train/validation/test progress bars")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="auto")
-    parser.add_argument("--fp16", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--fp16", action=argparse.BooleanOptionalAction, default=True,
+                        help="Enable mixed-precision autocast; --amp-dtype selects fp16 or bf16")
     parser.add_argument("--amp-dtype", choices=["fp16", "bf16"], default="bf16",
                         help="B200 recommendation: bf16; --no-fp16 disables autocast entirely")
     parser.add_argument("--qlora-compute-dtype", choices=["fp16", "bf16"],
