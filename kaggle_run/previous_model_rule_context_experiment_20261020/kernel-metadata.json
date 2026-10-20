@@ -1,0 +1,20 @@
+{
+  "id": "no1ceboy/vdt-previous-model-rule-context-test-20261020",
+  "title": "VDT Previous Model Rule Context Test 20261020",
+  "code_file": "run_experiment.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": "true",
+  "enable_gpu": "false",
+  "enable_tpu": "false",
+  "enable_internet": "true",
+  "machine_shape": "",
+  "dataset_sources": [
+    "no1ceboy/vdt-reconstructed-linker-source-20261016"
+  ],
+  "competition_sources": [],
+  "kernel_sources": [
+    "no1ceboy/vdt-independent-hard-cases-linker-20261016"
+  ],
+  "model_sources": []
+}
