@@ -1,10 +1,20 @@
-# Vietnamese legal synthetic reconstruction
+# Vietnamese court-document anonymization and entity linking
+
+## Company deployment and experiment handoff
+
+For installation on a company machine, the local API, required model assets,
+request examples, and exact natural/challenge evaluation commands, see
+[`docs/COMPANY_HANDOFF.md`](docs/COMPANY_HANDOFF.md).
 
 ## Install
 
 ```powershell
-python -m pip install .
+python -m pip install -e .
 ```
+
+Install the local API dependencies with `python -m pip install -e ".[api]"`.
+For court-data preparation and linker experiments, install
+`python -m pip install -e ".[data,training]"`.
 
 All workflows are available through `vdt --help`.
 
@@ -35,6 +45,37 @@ vdt reconstruct --input-file datasets/court_documents/documents.jsonl --ner-file
 Use the same `documents.jsonl` as `--source-file` for the HTML inspector.
 `datasets/court_documents_local/`, if present, is an independently prepared
 local-shard subset, not a verified complete/current Hugging Face snapshot.
+
+### Optional pre-NER OCR spacing normalization
+
+The corpus-trained cleaner is an optional view for NER. Train its character
+trigram model on training documents (keep evaluation documents out of this
+corpus), then pass that model to `run-ner`:
+
+```powershell
+vdt train-ocr-ngram --input-file datasets/court_documents_train.jsonl --text-field markdown --output-file outputs/ocr_char_trigram.json
+vdt run-ner --input-file datasets/court_documents_test.jsonl --output-file outputs/ner_ocr_normalized.jsonl --ocr-ngram-model outputs/ocr_char_trigram.json
+```
+
+Replace the example paths with your train and evaluation files. Do not train
+the n-gram model on documents used for held-out evaluation.
+
+The cleaner canonicalizes unusual Unicode whitespace and repeated horizontal
+spaces. It joins alphabetic fragments only when the joined token appears at
+least three times in the training corpus and the local character-trigram score
+improves by the configured margin (`--ocr-min-ngram-gain`, default `0.18`). It
+does not rewrite the source document. NER output records keep the original
+document length and map mention spans back to the original text; the per-row
+`ocr_normalization` field records changed whitespace and joined source spans.
+The existing post-NER dictionary repair remains useful as a second, entity-aware
+fallback for spacing patterns the pre-NER pass does not change.
+
+If this view is adopted, rerun NER, rebuild the reconstructed documents and
+replacement maps, rebuild the entity-linking data from those documents, then
+retrain and reevaluate the linker. The pretrained NER checkpoint itself does
+not need training again; it needs inference on the normalized view. Keep the old
+run as the comparison and use the same held-out documents to measure what the
+normalizer changed.
 
 The pipeline generates synthetic replacements for masked references in published court documents. It does not recover hidden identities. Run `vdt` commands from the repository root after installing the package.
 

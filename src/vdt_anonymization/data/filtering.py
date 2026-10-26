@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 from collections import Counter
+from itertools import zip_longest
 
 from ..core.quality import QUALITY_VERSION, score_document
 
@@ -40,6 +41,8 @@ def main():
     parser.add_argument("--links-file", default=DEFAULT_LINKS)
     parser.add_argument("--clean-output", default=DEFAULT_CLEAN)
     parser.add_argument("--report-file", default=DEFAULT_REPORT)
+    parser.add_argument("--maps-input", help="Optional reconstruction map JSONL aligned with the synthetic input")
+    parser.add_argument("--maps-output", help="Write maps for exactly the selected clean rows")
     parser.add_argument("--min-score", type=int, default=85,
                         help="Minimum score for output; default 85")
     parser.add_argument("--min-replacements", type=int, default=1,
@@ -52,21 +55,26 @@ def main():
         parser.error("--min-score must be between 0 and 100")
     if args.min_replacements < 0:
         parser.error("--min-replacements cannot be negative")
-    for path in (args.synthetic_file, args.links_file):
+    if bool(args.maps_input) != bool(args.maps_output):
+        parser.error("--maps-input and --maps-output must be supplied together")
+    input_paths = [args.synthetic_file, args.links_file]
+    output_paths = [args.clean_output, args.report_file]
+    if args.maps_input:
+        input_paths.append(args.maps_input)
+        output_paths.append(args.maps_output)
+    for path in input_paths:
         if not os.path.exists(path):
             parser.error(f"Input file does not exist: {path}")
-    if os.path.normcase(os.path.realpath(args.clean_output)) in {
-        os.path.normcase(os.path.realpath(args.synthetic_file)),
-        os.path.normcase(os.path.realpath(args.links_file)),
-    }:
-        parser.error("Output cannot overwrite an input")
-    if os.path.normcase(os.path.realpath(args.report_file)) in {
-        os.path.normcase(os.path.realpath(args.synthetic_file)),
-        os.path.normcase(os.path.realpath(args.links_file)),
-    }:
-        parser.error("Report cannot overwrite an input")
+    normalized_inputs = {os.path.normcase(os.path.realpath(path)) for path in input_paths}
+    normalized_outputs = [os.path.normcase(os.path.realpath(path)) for path in output_paths]
+    if len(set(normalized_outputs)) != len(normalized_outputs) or any(
+        path in normalized_inputs for path in normalized_outputs
+    ):
+        parser.error("Outputs must be distinct and must not overwrite an input")
     os.makedirs(os.path.dirname(os.path.abspath(args.clean_output)), exist_ok=True)
     os.makedirs(os.path.dirname(os.path.abspath(args.report_file)), exist_ok=True)
+    if args.maps_output:
+        os.makedirs(os.path.dirname(os.path.abspath(args.maps_output)), exist_ok=True)
 
     totals = Counter()
     score_buckets = Counter()
@@ -78,46 +86,61 @@ def main():
 
     synthetic_rows = iter_jsonl(args.synthetic_file)
     link_rows = iter_jsonl(args.links_file)
+    maps_rows = iter_jsonl(args.maps_input) if args.maps_input else None
     with open(args.clean_output, "w", encoding="utf-8") as clean_handle:
-        for (synthetic_line, row), (link_line, audit) in zip(synthetic_rows, link_rows):
-            totals["documents"] += 1
-            synthetic_id = doc_id(row, synthetic_line)
-            audit_id = doc_id(audit, link_line)
-            if synthetic_id != audit_id:
-                raise ValueError(
-                    f"Input order/id mismatch at lines {synthetic_line}/{link_line}: "
-                    f"{synthetic_id!r} != {audit_id!r}"
-                )
-            quality = score_document(audit, row, args.min_replacements)
-            quality["selected"] = bool(
-                quality["quality_score"] >= args.min_score
-                and (args.allow_review or not quality["reasons"])
+        maps_handle = open(args.maps_output, "w", encoding="utf-8") if args.maps_output else None
+        try:
+            rows = zip_longest(synthetic_rows, link_rows, maps_rows) if maps_rows else zip_longest(
+                synthetic_rows, link_rows
             )
-            row["reconstruction_quality"] = quality
-            score_buckets[quality["quality_tier"]] += 1
-            reason_counts.update(quality["reason_counts"])
-            case_type = metadata_bucket(row, "case_type")
-            doc_type = metadata_bucket(row, "doc_type")
-            by_case_type[case_type] += 1
-            by_doc_type[doc_type] += 1
-            if quality["selected"]:
-                clean_handle.write(json.dumps(row, ensure_ascii=False) + "\n")
-                totals["selected"] += 1
-                selected_by_case_type[case_type] += 1
-                selected_by_doc_type[doc_type] += 1
-            else:
-                totals["rejected"] += 1
-
-    try:
-        next(synthetic_rows)
-        raise ValueError("Synthetic dataset has more rows than link audit")
-    except StopIteration:
-        pass
-    try:
-        next(link_rows)
-        raise ValueError("Link audit has more rows than synthetic dataset")
-    except StopIteration:
-        pass
+            for values in rows:
+                if maps_rows:
+                    synthetic_item, link_item, maps_item = values
+                else:
+                    synthetic_item, link_item = values
+                    maps_item = None
+                if synthetic_item is None or link_item is None or (maps_rows and maps_item is None):
+                    raise ValueError("Synthetic, link-audit, and map inputs must have matching row counts")
+                synthetic_line, row = synthetic_item
+                link_line, audit = link_item
+                mapping = maps_item[1] if maps_item else None
+                totals["documents"] += 1
+                synthetic_id = doc_id(row, synthetic_line)
+                audit_id = doc_id(audit, link_line)
+                if synthetic_id != audit_id:
+                    raise ValueError(
+                        f"Input order/id mismatch at lines {synthetic_line}/{link_line}: "
+                        f"{synthetic_id!r} != {audit_id!r}"
+                    )
+                if mapping is not None and str(mapping.get("doc_id")) != synthetic_id:
+                    raise ValueError(
+                        f"Reconstruction map mismatch at line {maps_item[0]}: "
+                        f"{mapping.get('doc_id')!r} != {synthetic_id!r}"
+                    )
+                quality = score_document(audit, row, args.min_replacements)
+                quality["selected"] = bool(
+                    quality["quality_score"] >= args.min_score
+                    and (args.allow_review or not quality["reasons"])
+                )
+                row["reconstruction_quality"] = quality
+                score_buckets[quality["quality_tier"]] += 1
+                reason_counts.update(quality["reason_counts"])
+                case_type = metadata_bucket(row, "case_type")
+                doc_type = metadata_bucket(row, "doc_type")
+                by_case_type[case_type] += 1
+                by_doc_type[doc_type] += 1
+                if quality["selected"]:
+                    clean_handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+                    if maps_handle:
+                        maps_handle.write(json.dumps(mapping, ensure_ascii=False) + "\n")
+                    totals["selected"] += 1
+                    selected_by_case_type[case_type] += 1
+                    selected_by_doc_type[doc_type] += 1
+                else:
+                    totals["rejected"] += 1
+        finally:
+            if maps_handle:
+                maps_handle.close()
 
     report = {
         "quality_version": QUALITY_VERSION,

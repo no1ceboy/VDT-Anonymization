@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from itertools import combinations
 from pathlib import Path
 
@@ -12,11 +13,13 @@ from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
 from .clustering import complete_link_clusters
-from .dataset import MENTION_CLOSE, MENTION_OPEN
+from .dataset import MENTION_CLOSE, MENTION_OPEN, normalize_text
 from .finetuning import ADAPTER_MODES, build_encoder, compute_dtype
 from .location_constraints import location_rule_decision
 from .raw_dataset import RAW_PAIR_FEATURE_NAMES, raw_pair_features
 from .training import EntityLinkingModel, save_json
+from ..core.anonymization import apply_span_replacements, build_anonymization_plan
+from ..core.roles import preserve_court_personnel_clusters
 
 
 def _prepare_mentions(text: str, mentions: list[dict], context_chars: int) -> list[dict]:
@@ -45,6 +48,14 @@ def _prepare_mentions(text: str, mentions: list[dict], context_chars: int) -> li
             "context": text[left:start] + MENTION_OPEN + surface + MENTION_CLOSE + text[end:right],
         })
     return sorted(prepared, key=lambda item: (item["start"], item["end"], item["label"]))
+
+
+def _person_name_key(mention: dict) -> str | None:
+    """Final normalized token used to constrain person candidate clusters."""
+    if str(mention.get("label") or "").upper() != "PER":
+        return None
+    tokens = re.findall(r"\w+", normalize_text(mention.get("surface")), re.UNICODE)
+    return tokens[-1] if tokens else None
 
 
 class DocumentEntityLinker:
@@ -197,30 +208,80 @@ class DocumentEntityLinker:
     def predict_document(self, doc_id: str, text: str, mentions: list[dict],
                          threshold: float | None = None) -> dict:
         prepared, scores, cannot_link, must_link = self.score_document_pairs(text, mentions)
+        name_keys = [_person_name_key(mention) for mention in prepared]
+        name_cannot_link = {
+            (left, right)
+            for left, right in combinations(range(len(prepared)), 2)
+            if name_keys[left] is not None
+            and name_keys[right] is not None
+            and name_keys[left] != name_keys[right]
+        }
         selected_threshold = self.threshold if threshold is None else float(threshold)
         clusters = complete_link_clusters(
-            prepared, scores, selected_threshold, cannot_link, must_link
+            prepared, scores, selected_threshold, cannot_link | name_cannot_link, must_link
         )
-        linked_mentions = []
         output_clusters = []
         for cluster_number, indices in enumerate(clusters, start=1):
             cluster_id = f"{doc_id}:E{cluster_number:04d}"
             members = []
             for index in indices:
+                # Keep context available internally: the legal location rule
+                # needs the surrounding address to distinguish a province
+                # city from a district-level city. Strip it only from output.
                 mention = {key: value for key, value in prepared[index].items()
-                           if key not in {"context", "gold_entity_id", "entity_id"}}
+                           if key not in {"gold_entity_id", "entity_id"}}
                 mention["cluster_id"] = cluster_id
-                linked_mentions.append(mention)
                 members.append(mention)
             output_clusters.append({"cluster_id": cluster_id, "label": members[0]["label"], "mentions": members})
+        preserve_court_personnel_clusters(text, output_clusters)
+        anonymization_plan = build_anonymization_plan(text, output_clusters)
+        entity_encodings = {
+            item["entity_id"]: item for item in anonymization_plan["entities"]
+        }
+        for cluster in output_clusters:
+            encoding = entity_encodings.get(cluster["cluster_id"])
+            if encoding is None:
+                continue
+            for mention in cluster["mentions"]:
+                mention["anonymization_action"] = encoding["action"]
+                mention["anonymization_code"] = encoding.get("code")
+                mention["anonymization_codes"] = encoding.get("codes") or []
+                planned_name = mention.pop("planned_anonymized_name", None)
+                if encoding["action"] == "preserve":
+                    mention["anonymized_name"] = mention["surface"]
+                elif encoding["action"] == "anonymize":
+                    mention["anonymized_name"] = planned_name or encoding.get("encoded_name")
+                else:
+                    mention["anonymized_name"] = None
+        public_clusters = []
+        for cluster in output_clusters:
+            public_clusters.append({
+                **{key: value for key, value in cluster.items() if key != "mentions"},
+                "mentions": [
+                    {key: value for key, value in mention.items()
+                     if key not in {"context", "gold_entity_id", "entity_id"}}
+                    for mention in cluster["mentions"]
+                ],
+            })
+        linked_mentions = [mention for cluster in public_clusters for mention in cluster["mentions"]]
+        linked_mentions.sort(key=lambda item: (item["start"], item["end"]))
+        # A partial document can expose unredacted spans if any entity needs
+        # review, so only return publishable text when the whole plan is ready.
+        anonymized_text = (
+            apply_span_replacements(text, anonymization_plan["replacements"])
+            if anonymization_plan["status"] == "ready" else None
+        )
         return {
             "doc_id": str(doc_id),
             "threshold": selected_threshold,
-            "clustering": "complete_link_with_location_rules",
+            "clustering": "complete_link_with_location_and_person_name_buckets",
             "candidate_pairs_scored": len(scores),
             "location_rule_links": len(must_link),
             "location_rule_blocks": len(cannot_link),
-            "clusters": output_clusters,
+            "person_name_bucket_blocks": len(name_cannot_link),
+            "anonymization_plan": anonymization_plan,
+            "anonymized_text": anonymized_text,
+            "clusters": public_clusters,
             "mentions": sorted(linked_mentions, key=lambda item: (item["start"], item["end"])),
         }
 

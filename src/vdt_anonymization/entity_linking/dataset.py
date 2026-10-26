@@ -56,7 +56,9 @@ def number_suffix(value: object) -> int | None:
 
 
 def row_id(row: dict) -> str:
-    for field in ("doc_name", "case_id", "official_document_id", "id"):
+    # Keep the ID precedence aligned with NER and reconstruction, which use
+    # case_id first when both case_id and doc_name are present.
+    for field in ("case_id", "doc_name", "official_document_id", "id"):
         value = row.get(field)
         if value is not None and str(value).strip():
             return str(value).strip()

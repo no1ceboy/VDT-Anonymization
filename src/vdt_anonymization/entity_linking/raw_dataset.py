@@ -334,15 +334,48 @@ def _save_json(path: Path, value: dict) -> None:
     os.replace(temporary, path)
 
 
+def load_source_split_assignments(path: Path, document_ids: set[str]) -> dict[str, str]:
+    assignments: dict[str, str] = {}
+    allowed = {"train", "validation", "test"}
+    with path.open(encoding="utf-8-sig") as handle:
+        for line_number, line in enumerate(handle, 1):
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            doc_id = str(row.get("doc_id") or "").strip()
+            split = str(row.get("split") or "").strip()
+            if not doc_id or split not in allowed:
+                raise ValueError(f"Invalid split assignment at {path}:{line_number}")
+            if doc_id in assignments:
+                raise ValueError(f"Duplicate source split assignment for {doc_id!r}")
+            assignments[doc_id] = split
+    missing = sorted(document_ids - assignments.keys())
+    if missing:
+        raise ValueError(f"{len(missing)} eligible documents are absent from the source split assignment file")
+    present_splits = {assignments[doc_id] for doc_id in document_ids}
+    if present_splits != allowed:
+        raise ValueError(
+            "Eligible clean documents must remain in train, validation, and test; "
+            f"found {sorted(present_splits)}"
+        )
+    return assignments
+
+
 def build_dataset(clean_path: Path, maps_path: Path, output_dir: Path, *,
                   validation_ratio: float = 0.1, test_ratio: float = 0.1,
                   context_chars: int = 160, max_positives_per_entity: int = 8,
                   negatives_per_positive: float = 1.0, min_negatives_per_document: int = 2,
                   max_pairs_per_document: int = 128, seed: str = "vdt-raw-link-v1",
                   person_collision_rate: float = 0.30,
-                  collision_eval_rate: float = 1.0) -> dict:
+                  collision_eval_rate: float = 1.0,
+                  split_assignments_path: Path | None = None) -> dict:
     items = load_aligned(clean_path, maps_path)
-    assignments = allocate_splits(items, validation_ratio, test_ratio, seed)
+    if split_assignments_path:
+        assignments = load_source_split_assignments(
+            split_assignments_path, {item["doc_id"] for item in items}
+        )
+    else:
+        assignments = allocate_splits(items, validation_ratio, test_ratio, seed)
     staging = output_dir.with_name(output_dir.name + ".building")
     if staging.exists():
         shutil.rmtree(staging)
@@ -432,8 +465,13 @@ def build_dataset(clean_path: Path, maps_path: Path, output_dir: Path, *,
             "warning": "Labels originate from the reconstruction linker and are not independent human ground truth.",
         },
         "split_policy": {
-            "unit": "document", "stratified_by": ["category", "instance_level", "curation.primary_challenge"],
+            "unit": "document",
+            "stratified_by": ([] if split_assignments_path else
+                              ["category", "instance_level", "curation.primary_challenge"]),
+            "assignment_method": ("source_split_assignments" if split_assignments_path
+                                  else "stratified_document_hash"),
             "validation_ratio": validation_ratio, "test_ratio": test_ratio, "seed": seed,
+            "source_assignment_file": str(split_assignments_path) if split_assignments_path else None,
             "document_or_source_hash_overlap": 0,
         },
         "pair_policy": {
@@ -485,6 +523,8 @@ def main() -> None:
     parser.add_argument("--collision-eval-rate", type=float, default=1.0,
                         help="forced collision rate used only to build the separate validation/test "
                              "*_collision_eval.jsonl diagnostic files; does not affect the main pairs files")
+    parser.add_argument("--split-assignments", type=Path,
+                        help="JSONL from vdt split-documents; preserves source splits through reconstruction")
     parser.add_argument("--seed", default="vdt-raw-link-v1")
     args = parser.parse_args()
     manifest = build_dataset(
@@ -496,6 +536,7 @@ def main() -> None:
         max_pairs_per_document=args.max_pairs_per_document, seed=args.seed,
         person_collision_rate=args.person_collision_rate,
         collision_eval_rate=args.collision_eval_rate,
+        split_assignments_path=args.split_assignments.resolve() if args.split_assignments else None,
     )
     print(json.dumps(manifest, ensure_ascii=False, indent=2))
 

@@ -32,6 +32,8 @@ import sys
 from collections import Counter
 from statistics import mean
 
+from .ocr_ngram import CharacterTrigramModel, MODEL_FORMAT, normalize_before_ner
+
 
 DEFAULT_MODEL = "NlpHUST/ner-vietnamese-electra-base"
 DEFAULT_INPUT = "datasets/legal_test.jsonl"
@@ -129,43 +131,106 @@ def infer_document(text, tokenizer, model, device, label_map, entity_types,
     """Infer entities and return character offsets relative to `text`."""
     import torch
 
+    if max_length <= 0:
+        raise ValueError("max_length must be positive")
+    if stride < 0:
+        raise ValueError("stride cannot be negative")
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    if not text:
+        return []
+
+    # Tokenize once without truncation, then create every model window ourselves.
+    # Some fast-tokenizer overflow encodings can omit later windows for a single
+    # long string. Manual slicing makes full-document coverage explicit.
     encoded = tokenizer(
         text,
-        return_overflowing_tokens=True,
+        add_special_tokens=False,
+        truncation=False,
         return_offsets_mapping=True,
-        return_special_tokens_mask=True,
-        truncation=True,
-        max_length=max_length,
-        stride=stride,
-        padding=True,
-        return_tensors="pt",
+        return_attention_mask=False,
+        return_token_type_ids=False,
     )
-    offsets = encoded["offset_mapping"]
-    special_tokens = encoded.pop("special_tokens_mask")
-    encoded.pop("offset_mapping")
-    model_inputs = {key: value.to(device) for key, value in encoded.items()}
-    all_entities = []
+    token_ids = list(encoded["input_ids"])
+    token_offsets = encoded["offset_mapping"]
+    empty_encoding = tokenizer("", add_special_tokens=True, truncation=False)
+    special_count = len(empty_encoding["input_ids"])
+    content_length = max_length - special_count
+    if content_length <= 0:
+        raise ValueError("max_length leaves no room for text tokens after special tokens")
+    if stride >= content_length:
+        raise ValueError("stride must be smaller than the content window length")
+    step = content_length - stride
 
+    windows = []
+    allowed_inputs = set(getattr(tokenizer, "model_input_names", ["input_ids", "attention_mask"]))
+    for start in range(0, len(token_ids), step):
+        end = min(start + content_length, len(token_ids))
+        window_offsets = token_offsets[start:end]
+        valid_offsets = [
+            (int(pair[0]), int(pair[1])) for pair in window_offsets
+            if int(pair[1]) > int(pair[0])
+        ]
+        if not valid_offsets:
+            if end == len(token_ids):
+                break
+            continue
+        char_start = min(pair[0] for pair in valid_offsets)
+        char_end = max(pair[1] for pair in valid_offsets)
+        window_text = text[char_start:char_end]
+        prepared = tokenizer(
+            window_text, add_special_tokens=True, truncation=False,
+            return_offsets_mapping=True, return_special_tokens_mask=True,
+            return_attention_mask=True, return_token_type_ids=True,
+        )
+        input_ids = list(prepared["input_ids"])
+        special_mask = list(prepared["special_tokens_mask"])
+        offsets = []
+        for pair, is_special in zip(prepared["offset_mapping"], special_mask):
+            if is_special:
+                offsets.append((0, 0))
+            else:
+                offsets.append((char_start + int(pair[0]), char_start + int(pair[1])))
+        if len(offsets) != len(input_ids) or len(input_ids) > max_length:
+            raise RuntimeError("A manually built NER window exceeded max_length")
+        features = {
+            key: value for key, value in prepared.items()
+            if key in allowed_inputs
+        }
+        windows.append({
+            "features": features,
+            "offsets": offsets,
+            "special_tokens_mask": special_mask,
+        })
+        if end == len(token_ids):
+            break
+
+    all_entities = []
     model.eval()
     with torch.no_grad():
-        for batch_start in range(0, model_inputs["input_ids"].shape[0], batch_size):
-            batch = {
-                key: value[batch_start:batch_start + batch_size]
-                for key, value in model_inputs.items()
-            }
-            output = model(**batch)
+        for batch_start in range(0, len(windows), batch_size):
+            batch_windows = windows[batch_start:batch_start + batch_size]
+            features = [window["features"] for window in batch_windows]
+            batch = tokenizer.pad(features, padding=True, return_tensors="pt")
+            padded_length = int(batch["input_ids"].shape[1])
+            model_inputs = {key: value.to(device) for key, value in batch.items()}
+            output = model(**model_inputs)
             probabilities = torch.softmax(output.logits, dim=-1)
             scores, predictions = probabilities.max(dim=-1)
 
-            for local_index in range(predictions.shape[0]):
-                chunk_offsets = offsets[batch_start + local_index].tolist()
-                chunk_special = special_tokens[batch_start + local_index].tolist()
+            for local_index, window in enumerate(batch_windows):
+                chunk_offsets = list(window["offsets"])
+                chunk_special = list(window["special_tokens_mask"])
+                padding_count = padded_length - len(chunk_offsets)
+                if padding_count > 0:
+                    chunk_offsets.extend([(0, 0)] * padding_count)
+                    chunk_special.extend([1] * padding_count)
                 chunk_predictions = predictions[local_index].tolist()
                 chunk_scores = scores[local_index].tolist()
                 current = None
 
-                for token_index, (start_end, token_id, token_score, is_special) in enumerate(
-                    zip(chunk_offsets, chunk_predictions, chunk_scores, chunk_special)
+                for start_end, token_id, token_score, is_special in zip(
+                    chunk_offsets, chunk_predictions, chunk_scores, chunk_special
                 ):
                     start, end = int(start_end[0]), int(start_end[1])
                     if is_special or end <= start or start < 0 or end > len(text):
@@ -276,6 +341,12 @@ def main():
                         help="Do not attempt downloads when using --model-source huggingface")
     parser.add_argument("--input-file", default=DEFAULT_INPUT, help="Input JSONL file")
     parser.add_argument("--output-file", default=DEFAULT_OUTPUT, help="Output prediction JSONL file")
+    parser.add_argument("--ocr-ngram-model", default=None,
+                        help="Optional corpus-trained model for conservative pre-NER spacing normalization")
+    parser.add_argument("--ocr-min-ngram-gain", type=float, default=0.18,
+                        help="Minimum mean character-trigram score gain required to join fragments")
+    parser.add_argument("--ocr-min-candidate-frequency", type=int, default=3,
+                        help="Minimum corpus count required for a joined token")
     parser.add_argument("--text-field", default="markdown", help="Input row field containing document text")
     parser.add_argument("--id-field", default="case_id", help="Input row field used as document ID")
     parser.add_argument("--entity-types", default="PER,LOC,ORG",
@@ -304,17 +375,33 @@ def main():
         parser.error("--batch-size must be at least 1")
     if args.min_confidence < 0 or args.min_confidence > 1:
         parser.error("--min-confidence must be between 0 and 1")
+    if args.ocr_min_ngram_gain < 0:
+        parser.error("--ocr-min-ngram-gain cannot be negative")
+    if args.ocr_min_candidate_frequency < 1:
+        parser.error("--ocr-min-candidate-frequency must be positive")
+    if args.ocr_ngram_model and not os.path.isfile(args.ocr_ngram_model):
+        parser.error(f"OCR n-gram model does not exist: {args.ocr_ngram_model}")
 
     try:
         entity_types = parse_entity_types(args.entity_types)
         device = choose_device(args.device)
         tokenizer, model, model_reference = load_model(args, device)
+        ocr_model = CharacterTrigramModel.load(args.ocr_ngram_model) if args.ocr_ngram_model else None
     except Exception as exc:
-        raise SystemExit(f"[ERROR] Failed to load NER model: {type(exc).__name__}: {exc}")
+        raise SystemExit(f"[ERROR] Failed to load inference model(s): {type(exc).__name__}: {exc}")
 
     label_map = model_label_map(model)
     print(f"[NER] Device: {device}; labels: {label_map}")
     print(f"[NER] Entity filter: {sorted(entity_types) if entity_types else 'all'}")
+    ocr_min_frequency = args.ocr_min_candidate_frequency
+    if ocr_model:
+        ocr_min_frequency = max(
+            ocr_min_frequency,
+            int(ocr_model.metadata.get("min_word_count", 1)),
+        )
+        print(f"[NER] OCR spacing model: {args.ocr_ngram_model}; format={MODEL_FORMAT}; "
+              f"min_gain={args.ocr_min_ngram_gain:g}; "
+              f"min_candidate_frequency={ocr_min_frequency}")
 
     output_dir = os.path.dirname(os.path.abspath(args.output_file))
     os.makedirs(output_dir, exist_ok=True)
@@ -322,6 +409,8 @@ def main():
     output_documents = 0
     output_entities = 0
     errors = 0
+    ocr_whitespace_changes = 0
+    ocr_join_count = 0
 
     with open(args.output_file, "w", encoding="utf-8") as output_handle:
         for processed_index, (row_number, row) in enumerate(
@@ -343,8 +432,18 @@ def main():
                 text = str(raw_text)
                 record["char_len"] = len(text)
                 try:
+                    inference_text = text
+                    normalization = None
+                    if ocr_model:
+                        normalization = normalize_before_ner(
+                            text,
+                            ocr_model,
+                            min_gain=args.ocr_min_ngram_gain,
+                            min_candidate_frequency=ocr_min_frequency,
+                        )
+                        inference_text = normalization.text
                     entities = infer_document(
-                        text=text,
+                        text=inference_text,
                         tokenizer=tokenizer,
                         model=model,
                         device=device,
@@ -355,6 +454,27 @@ def main():
                         batch_size=args.batch_size,
                         min_confidence=args.min_confidence,
                     )
+                    if normalization:
+                        mapped_entities = []
+                        for entity in entities:
+                            source_span = normalization.source_span(entity["start"], entity["end"])
+                            if source_span is None:
+                                continue
+                            entity["start"], entity["end"] = source_span
+                            entity["text"] = text[source_span[0]:source_span[1]]
+                            mapped_entities.append(entity)
+                        entities = mapped_entities
+                        record["ocr_normalization"] = {
+                            "model_format": MODEL_FORMAT,
+                            "model_file": os.path.basename(args.ocr_ngram_model),
+                            "min_ngram_gain": args.ocr_min_ngram_gain,
+                            "min_candidate_frequency": ocr_min_frequency,
+                            "whitespace_changes": normalization.whitespace_changes,
+                            "joined_fragments": len(normalization.joins or []),
+                            "join_spans": normalization.joins or [],
+                        }
+                        ocr_whitespace_changes += normalization.whitespace_changes
+                        ocr_join_count += len(normalization.joins or [])
                     record["entities"] = entities
                     output_entities += len(entities)
                     counts.update(entity["label"] for entity in entities)
@@ -372,6 +492,8 @@ def main():
     print("\n[NER] Completed")
     print(f"[NER] Documents: {output_documents}; errors: {errors}")
     print(f"[NER] Entities: {output_entities}; by type: {dict(counts)}")
+    if ocr_model:
+        print(f"[NER] OCR spacing changes: {ocr_whitespace_changes}; joined fragments: {ocr_join_count}")
     print(f"[NER] Predictions saved to: {args.output_file}")
 
 

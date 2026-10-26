@@ -15,6 +15,7 @@ __pycache__/
 venv/
 env/
 *.egg-info/
+dist/
 
 # Local model/checkpoint files
 checkpoints/

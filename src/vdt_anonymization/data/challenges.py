@@ -1,4 +1,5 @@
-"""Build a deterministic challenge set from rejected reconstructions.
+"""
+Build a deterministic challenge set from rejected reconstructions.
 
 Challenge records are deliberately not training-clean. They preserve the
 synthetic reconstruction and attach the failure signals that make each record

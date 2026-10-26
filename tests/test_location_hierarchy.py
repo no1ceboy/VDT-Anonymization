@@ -62,9 +62,7 @@ class VietnameseLocationHierarchyTests(unittest.TestCase):
         self.assertEqual(location_rule_decision({"mention_a": exact, "mention_b": typo}), "link")
         self.assertTrue(signature["target"]["fuzzy"])
         self.assertEqual(location_pair_features(exact, typo)["fuzzy_admin_match"], 1.0)
-        self.assertEqual(
-            baseline_predict({"mention_a": exact, "mention_b": typo}, "exact_surface"), 1
-        )
+        self.assertEqual(baseline_predict({"mention_a": exact, "mention_b": typo})[0], 1)
 
     def test_low_level_alias_needs_shared_commune_or_district_parent(self):
         first = loc("Minh Tân", "Địa chỉ: ấp ", ", xã An Phước, huyện Châu Thành, tỉnh Bến Tre.")

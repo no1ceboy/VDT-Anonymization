@@ -172,6 +172,7 @@ def main():
             map_record = {
                 "row_number": row_number,
                 "doc_id": doc_id,
+                "source_sha256": audit.get("source_sha256"),
                 "pipeline_version": VERSION,
                 "review_status": audit.get('review_status'),
                 "entities": [

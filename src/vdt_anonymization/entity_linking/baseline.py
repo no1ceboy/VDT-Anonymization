@@ -1,4 +1,4 @@
-"""Evaluate transparent rule baselines against weak entity-linking labels."""
+"""Evaluate the normalized-text and location-rule baseline against pair labels."""
 
 from __future__ import annotations
 
@@ -7,27 +7,25 @@ import json
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from .dataset import marker_family, normalize_text
+from .dataset import normalize_text
 from .location_constraints import location_rule_decision
 
 
-def predict(pair: dict, method: str) -> int:
-    a, b = pair["mention_a"], pair["mention_b"]
+BASELINE_NAME = "normalized_surface_plus_location_rules"
+
+
+def predict(pair: dict) -> tuple[int, str | None]:
+    """Apply high-confidence location rules, then same-label exact text matching."""
     location_decision = location_rule_decision(pair)
     if location_decision == "block":
-        return 0
+        return 0, location_decision
     if location_decision == "link":
-        return 1
+        return 1, location_decision
+
+    a, b = pair["mention_a"], pair["mention_b"]
     same_label = a.get("label") == b.get("label")
-    if method == "exact_marker":
-        marker_a, marker_b = normalize_text(a.get("marker")), normalize_text(b.get("marker"))
-        return int(same_label and bool(marker_a) and marker_a == marker_b)
-    if method == "marker_family":
-        family_a, family_b = marker_family(a.get("marker")), marker_family(b.get("marker"))
-        return int(same_label and bool(family_a) and family_a == family_b)
-    if method == "exact_surface":
-        return int(same_label and normalize_text(a.get("surface")) == normalize_text(b.get("surface")))
-    raise ValueError(f"unknown baseline: {method}")
+    same_surface = normalize_text(a.get("surface")) == normalize_text(b.get("surface"))
+    return int(same_label and same_surface), location_decision
 
 
 def metrics(confusion: Counter) -> dict:
@@ -45,63 +43,65 @@ def metrics(confusion: Counter) -> dict:
     }
 
 
-def evaluate(path: Path, methods: list[str]) -> dict:
-    totals = {method: Counter() for method in methods}
-    by_difficulty = {method: defaultdict(Counter) for method in methods}
-    by_challenge = {method: defaultdict(Counter) for method in methods}
-    by_category = {method: defaultdict(Counter) for method in methods}
+def _metrics_by_group(groups: dict[str, Counter]) -> dict:
+    return {name: metrics(values) for name, values in sorted(groups.items())}
+
+
+def evaluate(path: Path) -> dict:
+    total = Counter()
+    by_difficulty: dict[str, Counter] = defaultdict(Counter)
+    by_challenge: dict[str, Counter] = defaultdict(Counter)
+    by_category: dict[str, Counter] = defaultdict(Counter)
     location_rules = Counter()
-    location_rule_disagreements = Counter()
     pair_count = 0
-    with path.open(encoding="utf-8") as handle:
+
+    with path.open(encoding="utf-8-sig") as handle:
         for line in handle:
+            if not line.strip():
+                continue
             pair = json.loads(line)
             pair_count += 1
             target = int(pair["target_linked"])
-            decision = location_rule_decision(pair)
-            if decision:
-                location_rules[decision] += 1
-                if decision == "block" and target == 1:
-                    location_rule_disagreements["blocked_weak_positive"] += 1
-                elif decision == "link" and target == 0:
-                    location_rule_disagreements["linked_weak_negative"] += 1
-            for method in methods:
-                prediction = predict(pair, method)
-                key = "tp" if target and prediction else "fn" if target else "fp" if prediction else "tn"
-                totals[method][key] += 1
-                by_difficulty[method][pair.get("difficulty", "Unknown")][key] += 1
-                metadata = pair.get("document_metadata") or {}
-                by_challenge[method][metadata.get("primary_challenge", "Unknown")][key] += 1
-                by_category[method][metadata.get("category", "Unknown")][key] += 1
+            prediction, location_decision = predict(pair)
+            outcome = "tp" if target and prediction else "fn" if target else "fp" if prediction else "tn"
+            total[outcome] += 1
+            by_difficulty[str(pair.get("difficulty") or "Unknown")][outcome] += 1
+
+            metadata = pair.get("document_metadata") or {}
+            by_challenge[str(metadata.get("primary_challenge") or "Unknown")][outcome] += 1
+            by_category[str(metadata.get("category") or "Unknown")][outcome] += 1
+
+            if location_decision:
+                location_rules[location_decision] += 1
+                if location_decision == "block" and target:
+                    location_rules["weak_label_disagreements"] += 1
+                elif location_decision == "link" and not target:
+                    location_rules["weak_label_disagreements"] += 1
+
+    if not pair_count:
+        raise ValueError(f"No pairs found in {path}")
+
     return {
         "evaluation_kind": "agreement with weak rule-generated labels; not independent human-ground-truth accuracy",
-        "location_policy": (
-            "LOC only: canonical same-unit matches link, contradictory administrative paths block, "
-            "uncertain parses defer to the selected baseline; NER type is authoritative"
+        "baseline": BASELINE_NAME,
+        "rule": (
+            "For LOC, follow a high-confidence canonical administrative-unit match or conflict; "
+            "otherwise link only if NER labels and normalized mention surfaces match."
         ),
+        "pair_file": str(path),
+        "metrics": {
+            "overall": metrics(total),
+            "by_difficulty": _metrics_by_group(by_difficulty),
+            "by_primary_challenge": _metrics_by_group(by_challenge),
+            "by_document_category": _metrics_by_group(by_category),
+        },
         "location_rule_counts": {
             "total_pairs": pair_count,
-            "decided_pairs": sum(location_rules.values()),
+            "decided_pairs": location_rules["link"] + location_rules["block"],
             "links": location_rules["link"],
             "blocks": location_rules["block"],
-            "deferred_pairs": pair_count - sum(location_rules.values()),
-            "weak_label_disagreements": dict(sorted(location_rule_disagreements.items())),
-        },
-        "pair_file": str(path),
-        "baselines": {
-            method: {
-                "overall": metrics(totals[method]),
-                "by_difficulty": {
-                    name: metrics(values) for name, values in sorted(by_difficulty[method].items())
-                },
-                "by_challenge": {
-                    name: metrics(values) for name, values in sorted(by_challenge[method].items())
-                },
-                "by_category": {
-                    name: metrics(values) for name, values in sorted(by_category[method].items())
-                },
-            }
-            for method in methods
+            "deferred_pairs": pair_count - location_rules["link"] - location_rules["block"],
+            "weak_label_disagreements": location_rules["weak_label_disagreements"],
         },
     }
 
@@ -110,10 +110,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pairs", required=True, type=Path)
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--methods", nargs="+", default=["exact_marker", "marker_family", "exact_surface"],
-                        choices=["exact_marker", "marker_family", "exact_surface"])
     args = parser.parse_args()
-    report = evaluate(args.pairs.resolve(), args.methods)
+    report = evaluate(args.pairs.resolve())
     rendered = json.dumps(report, ensure_ascii=False, indent=2)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

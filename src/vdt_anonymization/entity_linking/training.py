@@ -112,7 +112,15 @@ class PairCollator:
             dtype=torch.float32,
         )
         labels = torch.tensor([float(row["target_linked"]) for row in rows], dtype=torch.float32)
-        return {"a": encoded_a, "b": encoded_b, "features": features, "labels": labels}
+        sample_weights = torch.tensor(
+            [float(row.get("sample_weight", 1.0)) for row in rows], dtype=torch.float32
+        )
+        if torch.any(sample_weights < 0):
+            raise ValueError("sample_weight must be non-negative")
+        return {
+            "a": encoded_a, "b": encoded_b, "features": features,
+            "labels": labels, "sample_weights": sample_weights,
+        }
 
 
 class EntityLinkingModel(nn.Module):
@@ -200,6 +208,7 @@ def move_batch(batch: dict, device: torch.device) -> dict:
         "b": {key: value.to(device) for key, value in batch["b"].items()},
         "features": batch["features"].to(device),
         "labels": batch["labels"].to(device),
+        "sample_weights": batch["sample_weights"].to(device),
     }
 
 
@@ -210,7 +219,7 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device,
              show_progress: bool = True) -> tuple[list[int], list[float], float]:
     model.eval()
     labels, scores, loss_sum = [], [], 0.0
-    criterion = nn.BCEWithLogitsLoss(reduction="sum")
+    criterion = nn.BCEWithLogitsLoss(reduction="none")
     total = min(len(loader), max_steps) if max_steps is not None else len(loader)
     progress = tqdm(islice(loader, total), total=total, desc=desc, unit="batch", disable=not show_progress)
     for step, raw_batch in enumerate(progress, 1):
@@ -218,7 +227,8 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device,
         with torch.autocast(device_type=device.type, dtype=amp_dtype,
                             enabled=fp16 and device.type == "cuda"):
             logits = model(batch["a"], batch["b"], batch["features"])
-        batch_loss = criterion(logits, batch["labels"])
+        per_example_loss = criterion(logits, batch["labels"])
+        batch_loss = (per_example_loss * batch["sample_weights"]).sum()
         loss_sum += float(batch_loss.item())
         labels.extend(batch["labels"].int().cpu().tolist())
         scores.extend(torch.sigmoid(logits).cpu().tolist())
@@ -373,7 +383,7 @@ def train(args: argparse.Namespace) -> dict:
     scaler = torch.cuda.amp.GradScaler(
         enabled=args.fp16 and device.type == "cuda" and amp_dtype == torch.float16
     )
-    criterion = nn.BCEWithLogitsLoss()
+    criterion = nn.BCEWithLogitsLoss(reduction="none")
     tokenizer.save_pretrained(args.output_dir / "tokenizer")
     config = {
         "architecture": "shared_encoder_mean_pool_[a,b,abs(a-b),a*b,features]_mlp",
@@ -423,7 +433,10 @@ def train(args: argparse.Namespace) -> dict:
             with torch.autocast(device_type=device.type, dtype=amp_dtype,
                                 enabled=args.fp16 and device.type == "cuda"):
                 logits = model(batch["a"], batch["b"], batch["features"])
-                loss = criterion(logits, batch["labels"]) / args.gradient_accumulation
+                per_example_loss = criterion(logits, batch["labels"])
+                loss = ((per_example_loss * batch["sample_weights"]).sum()
+                        / batch["sample_weights"].sum().clamp_min(1.0)
+                        / args.gradient_accumulation)
             unscaled_loss = float(loss.item()) * args.gradient_accumulation
             scaler.scale(loss).backward()
             running_loss += unscaled_loss * len(batch["labels"])

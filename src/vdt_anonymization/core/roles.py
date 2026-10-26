@@ -1,24 +1,22 @@
 """Heuristic split of person/organisation mentions into court personnel versus
 case participants.
 
-Vietnamese court judgments are highly templated: a fixed set of role titles
-introduces the presiding judge, assessors and clerk near the top of the
-document and again in the closing signature block, while parties are only
-ever referenced through declared roles (``nguyên đơn``, ``bị đơn``, ...) or
-masked markers in the body. That structure is what a human reader relies on
-to tell "the judge who signed this" from "the litigant it is about" -- no
-statistics or training data are needed to reproduce it.
+Vietnamese court judgments use recurring role titles for judges, assessors,
+clerks and prosecutors in composition lists and signature blocks. Party names
+can also appear earlier in the ruling before a formal party heading, so this
+heuristic requires a nearby procedural title instead of treating the entire
+opening section as court personnel.
 
-This module answers one narrow question for a future production anonymiser
-that has to decide what to redact from an *un-anonymised* document: is a
-given person/organisation mention sitting in a court-role heading or the
-signature block? It is not used by the reconstruction pipeline in
-``core.reconstruction``, which only ever fills in already-masked markers and
-never makes a fresh masking decision on unmasked text.
+This module identifies proceeding personnel and agencies in an *un-anonymised*
+document. It is wired into document-linker predictions so the decision is
+recorded on the entity cluster and propagated to its linked mentions. It is
+not used by the reconstruction pipeline in ``core.reconstruction``, which
+fills already-masked markers to create synthetic training text.
 """
 from __future__ import annotations
 
 import re
+import unicodedata
 
 # Titles that only ever refer to the court itself, never to a party. Matched
 # case-insensitively; Vietnamese judgments are typically upper-cased here but
@@ -31,24 +29,54 @@ COURT_ROLE_TITLES = re.compile(
     re.IGNORECASE,
 )
 
-# The closing block of a judgment: everything from here to the end of the
-# document is signatures and the distribution list ("Nơi nhận"), never a
-# party reference. Unlike COURT_ROLE_TITLES, these two phrases are
-# closing-only conventions -- "TM." abbreviates "thay mặt" (on behalf of)
-# and only introduces a signature, and "Nơi nhận" only introduces the
-# distribution list. Neither appears in the opening composition list, which
-# is why they -- and not COURT_ROLE_TITLES -- are safe to use as a hard
-# cutoff for "everything after this point is the footer".
+# Closing-section markers bound local role-title searches. They identify the
+# signature/distribution area, but do not by themselves classify every entity
+# after them as court personnel.
 FOOTER_START = re.compile(r"(TM\.\s*HỘI ĐỒNG XÉT XỬ|Nơi nhận\s*:)", re.IGNORECASE)
 
-# The opening composition list ("Thẩm phán - Chủ tọa phiên tòa: Ông ...")
-# always ends before the first party is formally declared. This mirrors
-# ``DECLARATION`` in ``core.reconstruction`` -- the same anchor the
-# reconstruction engine already trusts to mean "a party is being named here".
+# Formal party labels provide a useful section boundary for local context
+# searches. They do not imply that every name before the first label is court
+# personnel; some decisions name the parties in the ruling first.
 FIRST_PARTY_DECLARATION = re.compile(
     r"(nguyên đơn|bị đơn|bị cáo|bị hại|người làm chứng|người khởi kiện|người bị kiện)\s*:",
     re.IGNORECASE,
 )
+
+# Accent-folded patterns cover ordinary Unicode Vietnamese as well as OCR text
+# with inconsistent capitalization. Folding is offset-preserving for the
+# Vietnamese alphabet, so original NER character spans remain valid.
+FOLDED_COURT_ROLE_TITLES = re.compile(
+    r"\b(?:tham phan|hoi tham nhan dan|chu toa phien toa|"
+    r"thu ky(?: phien toa| toa an)?|tm\.\s*hoi dong xet xu|"
+    r"hoi dong xet xu|pho chanh an|chanh an|kiem sat vien|"
+    r"dieu tra vien|can bo dieu tra)\b",
+    re.IGNORECASE,
+)
+DIRECT_PROCEEDING_ROLE = re.compile(
+    r"\b(?:tham phan|hoi tham nhan dan|thanh vien hoi dong xet xu|chu toa phien toa|"
+    r"thu ky(?: phien toa| toa an)?|kiem sat vien|dieu tra vien|can bo dieu tra)\b",
+    re.IGNORECASE,
+)
+PROCEEDING_AGENCY = re.compile(
+    r"\b(?:tand(?:tc)?|toa an(?: nhan dan)?|"
+    r"vksnd(?:tc)?|vien kiem sat(?: nhan dan)?|"
+    r"co quan (?:canh sat|an ninh) dieu tra|co quan csdt|cqdt|csdt)\b",
+    re.IGNORECASE,
+)
+FOLDED_FOOTER_START = re.compile(r"(?:tm\.\s*hoi dong xet xu|noi nhan\s*:)", re.IGNORECASE)
+FOLDED_FIRST_PARTY_DECLARATION = re.compile(
+    r"\b(?:nguyen don|bi don|bi cao|bi hai|bi hoi|nguoi lam chung|"
+    r"nguoi khoi kien|nguoi bi kien)\s*:",
+    re.IGNORECASE,
+)
+
+
+def _fold_vietnamese(text: str) -> str:
+    text = text.replace("\u0111", "d").replace("\u0110", "D")
+    return "".join(
+        char for char in unicodedata.normalize("NFD", text)
+        if not unicodedata.combining(char)
+    )
 
 
 def signature_block_start(text: str) -> int | None:
@@ -58,40 +86,113 @@ def signature_block_start(text: str) -> int | None:
     language earlier (see COURT_ROLE_TITLES), and the footer is always the
     final such occurrence, never the first.
     """
-    matches = list(FOOTER_START.finditer(text))
-    return matches[-1].start() if matches else None
+    starts = [match.start() for match in FOOTER_START.finditer(text)]
+    starts.extend(match.start() for match in FOLDED_FOOTER_START.finditer(_fold_vietnamese(text)))
+    return max(starts) if starts else None
 
 
 def header_zone_end(text: str) -> int:
-    """Offset where the opening court-composition list ends, or 0 if there is
-    no declared party to bound it against (safe fallback: no header zone)."""
-    match = FIRST_PARTY_DECLARATION.search(text)
-    return match.start() if match else 0
+    """Offset of the first formal party declaration, or 0 when absent.
+
+    This is only a context-window boundary, not a classification rule.
+    """
+    starts = [match.start() for match in FIRST_PARTY_DECLARATION.finditer(text)]
+    starts.extend(match.start() for match in FOLDED_FIRST_PARTY_DECLARATION.finditer(_fold_vietnamese(text)))
+    return min(starts) if starts else 0
 
 
 def is_court_personnel_context(text: str, start: int, end: int, window: int = 120) -> bool:
-    """True when the mention at ``text[start:end]`` sits in the opening
-    court-composition list or the closing signature block.
+    """True when a procedural title structurally identifies this mention.
 
-    The local ``window`` check only looks inside the body region strictly
-    between those two zones. Without that clipping, a title text sitting
-    just across either boundary could "bleed" onto a nearby body mention
-    that has nothing to do with it -- the same "no document-wide
-    propagation" principle ``core.reconstruction`` already follows for
-    markers.
+    Search windows stay inside the opening, body, or footer section. A name
+    is never protected only because it appears before a party label or
+    after the footer begins.
     """
+    folded = _fold_vietnamese(text)
+    direct_left = folded[max(0, start - 70):start]
+    direct_right = folded[end:min(len(text), end + 70)]
+    if (re.search(r"(?:" + DIRECT_PROCEEDING_ROLE.pattern[2:-2] + r")[\s:,-]*(?:(?:ong|ba)\s*)?$", direct_left)
+            or re.match(r"^\s*[,;:]?\s*(?:la\s+)?(?:" + DIRECT_PROCEEDING_ROLE.pattern[2:-2] + r")\b", direct_right)):
+        return True
+
     head_end = header_zone_end(text)
-    if start < head_end:
-        return True
     foot_start = signature_block_start(text)
-    if foot_start is not None and start >= foot_start:
-        return True
-    right_limit = foot_start if foot_start is not None else len(text)
-    left = text[max(head_end, start - window):start]
-    right = text[end:min(right_limit, end + window)]
-    return bool(COURT_ROLE_TITLES.search(left) or COURT_ROLE_TITLES.search(right))
+    if start < head_end:
+        left_limit, right_limit = 0, head_end
+    elif foot_start is not None and start >= foot_start:
+        left_limit, right_limit = foot_start, len(text)
+    else:
+        # Body mentions inherit a protected role only when the same linked
+        # entity also has a mention in the formal opening or signature block.
+        # A nearby procedural title in narrative text is not enough.
+        return False
+    # Signature titles and names are often aligned in separate columns, with
+    # the distribution list between them. Keep a wider search inside that
+    # already bounded footer section only.
+    local_window = max(window, 500) if foot_start is not None and start >= foot_start else window
+    left_start = max(left_limit, start - local_window)
+    right_end = min(right_limit, end + window)
+    left = text[left_start:start]
+    right = text[end:right_end]
+    folded_left = folded[left_start:start]
+    folded_right = folded[end:right_end]
+    return bool(
+        COURT_ROLE_TITLES.search(left) or COURT_ROLE_TITLES.search(right)
+        or FOLDED_COURT_ROLE_TITLES.search(folded_left)
+        or FOLDED_COURT_ROLE_TITLES.search(folded_right)
+    )
+
+
+def is_proceeding_agency_context(text: str, start: int, end: int) -> bool:
+    """True when an ORG span names a court, procuracy, or investigative body."""
+    if not 0 <= start < end <= len(text):
+        return False
+    return bool(PROCEEDING_AGENCY.search(_fold_vietnamese(text[start:end])))
 
 
 def classify_person_role(text: str, start: int, end: int) -> str:
     """Return ``"court_personnel"`` or ``"party"`` for a PER/ORG span."""
     return "court_personnel" if is_court_personnel_context(text, start, end) else "party"
+
+
+def preserve_court_personnel_clusters(text: str, clusters: list[dict]) -> list[dict]:
+    """Mark linked people/agencies in procedural roles as non-redactable.
+
+    Protect direct mentions of named proceeding agencies and people identified
+    by a procedural title. The formal composition and signature layout also
+    identifies officials when the name and role are on nearby separate lines.
+    Once one mention triggers, the decision is propagated to its whole linked
+    cluster so later mentions receive the same treatment.
+    """
+    for cluster in clusters:
+        mentions = cluster.get("mentions") or []
+        protected = []
+        for mention in mentions:
+            label = str(mention.get("label") or cluster.get("label") or "").upper()
+            if label not in {"PER", "ORG"}:
+                continue
+            start, end = mention.get("start"), mention.get("end")
+            if not isinstance(start, int) or not isinstance(end, int):
+                continue
+            is_proceeding_person = label == "PER" and is_court_personnel_context(text, start, end)
+            is_proceeding_agency = label == "ORG" and is_proceeding_agency_context(text, start, end)
+            if is_proceeding_person or is_proceeding_agency:
+                protected.append(mention)
+
+        if not protected:
+            continue
+
+        cluster["procedural_status"] = "court_personnel_or_agency"
+        cluster["anonymization_action"] = "preserve"
+        cluster["anonymization_reason"] = "proceeding_person_or_agency_exception"
+        protected_ids = {id(mention) for mention in protected}
+        for mention in mentions:
+            mention["procedural_status"] = (
+                "court_personnel_or_agency"
+                if id(mention) in protected_ids
+                else "linked_to_court_personnel_or_agency"
+            )
+            mention["anonymization_action"] = "preserve"
+            mention["anonymization_reason"] = "linked_entity_is_proceeding_person_or_agency"
+
+    return clusters

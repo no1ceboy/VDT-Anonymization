@@ -114,15 +114,26 @@ def _marked_clause(mention: dict) -> tuple[str, tuple[int, int], str] | None:
     for raw_clause in _CLAUSE_BOUNDARY.split(protected):
         if open_marker not in raw_clause.casefold() or close_marker not in raw_clause.casefold():
             continue
-        tagged = raw_clause.replace(MENTION_OPEN, _OPEN_SENTINEL).replace(MENTION_CLOSE, _CLOSE_SENTINEL)
+        # Keep word-boundary matches usable when the marked mention starts
+        # immediately after an administrative prefix. Without separators,
+        # ``[MENTION]thị xã`` becomes ``markerthi xa`` after folding, so the
+        # parser misses ``thị xã`` and may read only its inner word ``xã``.
+        tagged = raw_clause.replace(MENTION_OPEN, _OPEN_SENTINEL + " ").replace(
+            MENTION_CLOSE, " " + _CLOSE_SENTINEL
+        )
         folded = _fold(tagged)
         start = folded.find(_OPEN_SENTINEL)
         end = folded.find(_CLOSE_SENTINEL, start + len(_OPEN_SENTINEL)) if start >= 0 else -1
         if start < 0 or end < 0:
             continue
         target_start = start + len(_OPEN_SENTINEL)
-        target = folded[target_start:end]
-        return folded, (target_start, end), _without_markers(target).strip()
+        target_end = end
+        while target_start < target_end and folded[target_start].isspace():
+            target_start += 1
+        while target_end > target_start and folded[target_end - 1].isspace():
+            target_end -= 1
+        target = folded[target_start:target_end]
+        return folded, (target_start, target_end), _without_markers(target).strip()
     return None
 
 
@@ -279,7 +290,33 @@ def _parse_location(mention: dict) -> dict:
     if marked is None:
         return {}
     folded, target_span, target_surface = marked
-    prefixes = list(_PREFIX_RE.finditer(folded))
+    raw_prefixes = list(_PREFIX_RE.finditer(folded))
+    prefixes = []
+    for index, match in enumerate(raw_prefixes):
+        if prefixes:
+            previous = prefixes[-1]
+            previous_prefix = previous.group("prefix").casefold()
+            between = folded[previous.end():match.start()]
+            # Some administrative prefixes are also common parts of place
+            # names. For example, ``ban`` in ``thị xã Điện Bàn`` is part of
+            # the district name, not a hamlet marker. Keep it in the preceding
+            # name when the longer text resolves as one official unit and the
+            # shorter text before this prefix does not.
+            if (not re.search(r"[,;.!?\r\n]", between)
+                    and previous_prefix in _PREFIX_LEVELS):
+                next_start = (raw_prefixes[index + 1].start()
+                              if index + 1 < len(raw_prefixes) else len(folded))
+                partial_name = _without_markers(between).strip(" :-\t")
+                full_name = _without_markers(
+                    folded[previous.end():next_start]
+                ).strip(" :-\t")
+                roles = _PREFIX_LEVELS[previous_prefix]
+                allowed = _PREFIX_UNITS.get(previous_prefix)
+                partial_rows = _candidate_rows(partial_name, roles, allowed)
+                full_rows = _candidate_rows(full_name, roles, allowed)
+                if len(full_rows) == 1 and not partial_rows:
+                    continue
+        prefixes.append(match)
     segments = []
     for index, match in enumerate(prefixes):
         stop = prefixes[index + 1].start() if index + 1 < len(prefixes) else len(folded)

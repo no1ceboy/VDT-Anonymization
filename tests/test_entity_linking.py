@@ -129,15 +129,24 @@ class EntityLinkingDataTests(unittest.TestCase):
             expected = pair["mention_a"]["entity_id"] == pair["mention_b"]["entity_id"]
             self.assertEqual(bool(pair["target_linked"]), expected)
 
-    def test_pair_features_and_rule_baseline(self):
-        base = {"label": "PER", "surface": "H1", "marker": "H1", "marker_family": "h", "role": "person", "start": 10}
-        other = {"label": "PER", "surface": "H2", "marker": "H2", "marker_family": "h", "role": "person", "start": 20}
+    def test_pair_features_and_surface_baseline(self):
+        base = {"label": "PER", "surface": "Nguyen Van An", "role": "person", "start": 10}
+        other = {"label": "PER", "surface": "Nguyen Van An", "role": "person", "start": 20}
         features = pair_features(base, other)
-        self.assertEqual(features["same_marker"], 0.0)
-        self.assertEqual(features["same_marker_family"], 1.0)
         pair = {"mention_a": base, "mention_b": other}
-        self.assertEqual(predict(pair, "exact_marker"), 0)
-        self.assertEqual(predict(pair, "marker_family"), 1)
+        self.assertEqual(features["same_surface"], 1.0)
+        prediction, location_decision = predict(pair)
+        self.assertEqual(prediction, 1)
+        self.assertIsNone(location_decision)
+
+    def test_surface_baseline_keeps_different_names_separate(self):
+        pair = {
+            "mention_a": {"label": "PER", "surface": "Nguyen Van A"},
+            "mention_b": {"label": "PER", "surface": "Nguyen Van B"},
+        }
+        prediction, location_decision = predict(pair)
+        self.assertIsNone(location_decision)
+        self.assertEqual(prediction, 0)
 
     def test_conflicting_explicit_provinces_veto_location_link(self):
         a = {
@@ -155,7 +164,7 @@ class EntityLinkingDataTests(unittest.TestCase):
         self.assertEqual(explicit_province(b), "bến tre")
         self.assertTrue(has_explicit_province_conflict(pair))
         self.assertEqual(location_province_features(a, b)["conflicting_explicit_province"], 1.0)
-        self.assertEqual(predict(pair, "exact_surface"), 0)
+        self.assertEqual(predict(pair)[0], 0)
 
     def test_v3_case_455248_uses_the_marked_address_not_the_previous_party(self):
         a = {
@@ -180,7 +189,7 @@ class EntityLinkingDataTests(unittest.TestCase):
         self.assertEqual(explicit_province(a), "tiền giang")
         self.assertEqual(explicit_province(b), "bến tre")
         self.assertTrue(has_explicit_province_conflict(pair))
-        self.assertEqual(predict(pair, "exact_surface"), 0)
+        self.assertEqual(predict(pair)[0], 0)
 
     def test_different_communes_in_same_province_are_not_vetoed(self):
         a = {
