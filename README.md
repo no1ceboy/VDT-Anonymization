@@ -1,5 +1,132 @@
 # Vietnamese court-document anonymization and entity linking
 
+## Company quick start (Windows)
+
+This section covers the two company workflows: anonymize a DOCX with the local
+API, and reproduce the saved entity-linking experiment. The repository contains
+code and the location vocabulary, but **does not contain model weights or the
+experiment datasets**. Transfer those separately through approved company
+storage. For the complete fresh-data workflow and configuration details, see
+[`docs/COMPANY_HANDOFF.md`](docs/COMPANY_HANDOFF.md).
+
+### 1. Clone and install
+
+Use Python 3.11. Install the company-approved PyTorch build for the target
+machine first (CPU or CUDA), then install the project and API dependencies:
+
+```powershell
+git clone https://github.com/no1ceboy/VDT-Anonymization.git
+cd VDT-Anonymization
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+# Install the company-approved PyTorch build here, if it is not already installed.
+python -m pip install -e ".[api]"
+```
+
+### 2. Place the model assets
+
+Transfer the complete local NER model directory, the ELECTRA base encoder, the
+trained linker checkpoint and its sibling tokenizer directory. The OCR model
+is optional. A suggested layout is:
+
+```text
+D:\vdt-deploy\models\
+  ner\
+  electra-base\
+  linker\
+    best_model.pt
+    tokenizer\
+  ocr_char_trigram.json             # optional
+```
+
+### 3. Start the API
+
+In a PowerShell window, set paths, enter the API key from the company secret
+store, and start one API worker:
+
+```powershell
+$env:VDT_NER_MODEL_PATH = "D:\vdt-deploy\models\ner"
+$env:VDT_LINKER_BASE_MODEL = "D:\vdt-deploy\models\electra-base"
+$env:VDT_LINKER_CHECKPOINT = "D:\vdt-deploy\models\linker\best_model.pt"
+$env:VDT_OCR_NGRAM_MODEL = "D:\vdt-deploy\models\ocr_char_trigram.json" # optional
+$env:VDT_API_KEY = Read-Host "API key from company secret store"
+$env:VDT_DEVICE = "auto"           # or cpu / cuda
+$env:VDT_CLUSTER_THRESHOLD = "0.10"
+vdt serve-api --host 127.0.0.1 --port 8000
+```
+
+Keep that window open. In a second PowerShell window, enter the same API key,
+check readiness, and submit a DOCX. The output file is created only for an HTTP
+200 response; HTTP 409 means the document needs review.
+
+```powershell
+$env:VDT_API_KEY = Read-Host "Enter the same API key"
+Invoke-RestMethod http://127.0.0.1:8000/readyz
+
+$inputFile = "D:\input\decision.docx"
+$outputFile = "D:\output\decision_anonymized.docx"
+$tmpFile = "$outputFile.response"
+New-Item -ItemType Directory -Force (Split-Path $outputFile) | Out-Null
+$status = curl.exe -sS -o $tmpFile -w "%{http_code}" `
+  -X POST http://127.0.0.1:8000/v1/anonymize/docx `
+  -H "X-API-Key: $env:VDT_API_KEY" `
+  -F "file=@$inputFile"
+if ($status -eq "200") {
+  Move-Item -LiteralPath $tmpFile -Destination $outputFile -Force
+  "Saved $outputFile"
+} else {
+  Get-Content -LiteralPath $tmpFile -Raw
+  Remove-Item -LiteralPath $tmpFile
+  throw "Request returned HTTP $status; no anonymized DOCX was saved."
+}
+```
+
+### 4. Reproduce the saved linker experiment
+
+Run this on the approved GPU machine. Copy the saved `raw_dataset`,
+`challenge_dataset`, and base encoder to it first; use a new, empty run folder.
+Install the training extra in the activated environment:
+
+```powershell
+python -m pip install -e ".[training]"
+$DATA = "D:\transfer\raw_dataset"
+$CHALLENGE = "D:\transfer\challenge_dataset"
+$BASE = "D:\vdt-deploy\models\electra-base"
+$RUN = "D:\runs\vdt-linker-001"
+
+vdt train-linker `
+  --train-pairs "$CHALLENGE\pairs\train_balanced_independent.jsonl" `
+  --validation-pairs "$DATA\pairs\validation.jsonl" `
+  --test-pairs "$DATA\pairs\test.jsonl" `
+  --output-dir "$RUN\pairwise_model" --model-name "$BASE" `
+  --finetune-mode fft --epochs 3 --batch-size 8 `
+  --gradient-accumulation 2 --max-length 256 --num-workers 0 --seed 42 `
+  --device cuda --fp16 --amp-dtype fp16
+
+vdt eval-linker `
+  --checkpoint "$RUN\pairwise_model\best_model.pt" --model-name "$BASE" `
+  --pairs "$DATA\pairs\test.jsonl" `
+  --collision-pairs "$CHALLENGE\pairs\test_independent_challenge.jsonl" `
+  --output "$RUN\pairwise_model\test_evaluation.json" `
+  --device cuda --amp-dtype fp16
+
+vdt eval-clusters `
+  --checkpoint "$RUN\pairwise_model\best_model.pt" --model-name "$BASE" `
+  --documents "$DATA\documents\test.jsonl" --maps "$DATA\maps\test.jsonl" `
+  --threshold 0.10 --output "$RUN\cluster_test_natural.json" --device cuda
+
+vdt eval-clusters `
+  --checkpoint "$RUN\pairwise_model\best_model.pt" --model-name "$BASE" `
+  --documents "$CHALLENGE\documents\test_independent_challenge.jsonl" `
+  --maps "$CHALLENGE\maps\test_independent_challenge.jsonl" `
+  --threshold 0.10 --output "$RUN\cluster_test_challenge.json" --device cuda
+```
+
+The natural and injected-challenge results are evaluated separately. To build
+a new dataset from source court decisions rather than reproduce this saved
+experiment, follow Sections 6–7 of the handoff guide.
+
 ## Company deployment and experiment handoff
 
 For installation on a company machine, the local API, required model assets,
