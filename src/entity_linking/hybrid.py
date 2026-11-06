@@ -374,7 +374,9 @@ def train_and_evaluate(args: argparse.Namespace) -> dict:
         from sklearn.feature_extraction import DictVectorizer
         from sklearn.linear_model import LogisticRegression
     except ImportError as error:  # pragma: no cover - optional training dependency
-        raise RuntimeError("Hybrid scorer training requires scikit-learn; install vdt-anonymization[hybrid].") from error
+        raise RuntimeError(
+            "Hybrid scorer training requires scikit-learn; install the project with the [hybrid] extra."
+        ) from error
 
     train_rows, validation_rows, test_rows = map(_read_jsonl,
         (args.train_pairs, args.validation_pairs, args.test_pairs))

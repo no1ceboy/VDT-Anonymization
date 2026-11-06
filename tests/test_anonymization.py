@@ -1,6 +1,6 @@
 import unittest
-from vdt_anonymization.entity_linking.dataset import MENTION_CLOSE, MENTION_OPEN
-from vdt_anonymization.core.anonymization import (
+from src.entity_linking.dataset import MENTION_CLOSE, MENTION_OPEN
+from src.core.anonymization import (
     apply_span_replacements,
     build_anonymization_plan,
 )

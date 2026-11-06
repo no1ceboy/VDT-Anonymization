@@ -524,7 +524,7 @@ def main() -> None:
                         help="forced collision rate used only to build the separate validation/test "
                              "*_collision_eval.jsonl diagnostic files; does not affect the main pairs files")
     parser.add_argument("--split-assignments", type=Path,
-                        help="JSONL from vdt split-documents; preserves source splits through reconstruction")
+                        help="JSONL from src/data/split_documents.py; preserves source splits through reconstruction")
     parser.add_argument("--seed", default="vdt-raw-link-v1")
     args = parser.parse_args()
     manifest = build_dataset(

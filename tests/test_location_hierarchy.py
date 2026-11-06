@@ -1,9 +1,9 @@
 import unittest
 
-from vdt_anonymization.entity_linking.dataset import MENTION_CLOSE, MENTION_OPEN
-from vdt_anonymization.entity_linking.clustering import complete_link_clusters
-from vdt_anonymization.entity_linking.baseline import predict as baseline_predict
-from vdt_anonymization.entity_linking.location_constraints import (
+from src.entity_linking.dataset import MENTION_CLOSE, MENTION_OPEN
+from src.entity_linking.clustering import complete_link_clusters
+from src.entity_linking.baseline import predict as baseline_predict
+from src.entity_linking.location_constraints import (
     explicit_province,
     location_pair_features,
     location_rule_decision,

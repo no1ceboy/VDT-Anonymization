@@ -28,6 +28,9 @@ data = [
   "huggingface_hub>=0.23",
 ]
 training = ["tensorboard>=2.14"]
+local = [
+  "python-docx>=1.1,<2",
+]
 api = [
   "fastapi>=0.110,<1",
   "uvicorn[standard]>=0.27,<1",
@@ -36,10 +39,11 @@ api = [
 ]
 
 [project.scripts]
-vdt = "vdt_anonymization.cli:main"
+court-anonymizer = "src.cli:main"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["."]
+include = ["src", "src.*"]
 
 [tool.setuptools.package-data]
-vdt_anonymization = ["resources/dvhcvn/*", "review/*.html", "review/*.css", "review/*.js"]
+src = ["resources/dvhcvn/*", "review/*.html", "review/*.css", "review/*.js"]

@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from vdt_anonymization.entity_linking.v4_dataset import (
+from src.entity_linking.v4_dataset import (
     _clean_document,
     _collision_candidates,
     _make_collision_variant,

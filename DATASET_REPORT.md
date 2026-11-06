@@ -1,5 +1,7 @@
 # VDT entity-linking dataset: quantitative report
 
+> Historical V1 report. The marker-based baselines below describe only the older marker-bearing V1 pairs; do not use them as the V4 or deployment baseline. Current V4 baseline commands and scope are in [`TRAIN_ENTITY_LINKER.md`](TRAIN_ENTITY_LINKER.md).
+
 ## Dataset scope
 
 The dataset was streamed from `tmquan/cbba-toaan-gov-vn`, then passed through
@@ -107,7 +109,7 @@ never include the synthetic reconstruction value. Labels are weak supervision:
 positive pairs share a rule-generated `entity_id`, while negative pairs have
 different rule-generated IDs. They are not independently human-annotated GT.
 
-## Rule baselines on the held-out test split
+## Historical V1 rule baselines on the held-out test split
 
 | Baseline | Accuracy | Precision | Recall | F1 |
 |---|---:|---:|---:|---:|
@@ -126,6 +128,8 @@ document-disjoint entity-linking pairs. It has strong coverage of address,
 full-name, numbered, dotted-initial, alias, and organization cases, with 89.47%
 of negative pairs intentionally drawn from same-label conflicts. The dataset is
 clean under deterministic structural checks, but its labels are rule-generated
-weak supervision and its document metadata are imbalanced. Model performance
-should therefore be reported against the exact-marker baseline and followed by
-human review of a sample of hard same-label conflicts.
+weak supervision and its document metadata are imbalanced. For V1, report model
+performance against the marker baselines above and follow it with human review
+of hard same-label conflicts. V4 uses a different input formulation and its
+current baseline is normalized surface matching plus location rules; neither
+weak-label evaluation substitutes for an independently labeled deployment test.

@@ -6,28 +6,28 @@ import unittest
 import torch
 from torch import nn
 
-from vdt_anonymization.entity_linking.dataset import (
+from src.entity_linking.dataset import (
     MENTION_CLOSE,
     MENTION_OPEN,
     allocate_splits,
     build_document_pairs,
     pair_features,
 )
-from vdt_anonymization.entity_linking.baseline import predict
-from vdt_anonymization.entity_linking.clustering import (
+from src.entity_linking.baseline import predict
+from src.entity_linking.clustering import (
     aggregate_cluster_metrics,
     cluster_metrics,
     complete_link_clusters,
 )
-from vdt_anonymization.entity_linking.evaluate import _link_error_summary
-from vdt_anonymization.entity_linking.training import EntityLinkingModel, binary_metrics
-from vdt_anonymization.entity_linking.finetuning import normalize_finetune_mode, select_lora_targets
-from vdt_anonymization.entity_linking.location_constraints import (
+from src.entity_linking.evaluate import _link_error_summary
+from src.entity_linking.training import EntityLinkingModel, binary_metrics
+from src.entity_linking.finetuning import normalize_finetune_mode, select_lora_targets
+from src.entity_linking.location_constraints import (
     explicit_province,
     has_explicit_province_conflict,
     location_province_features,
 )
-from vdt_anonymization.entity_linking.raw_dataset import raw_pair_features
+from src.entity_linking.raw_dataset import raw_pair_features
 
 
 def replacement(text, surface, occurrence, entity_id, label="PER"):

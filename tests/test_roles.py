@@ -2,7 +2,7 @@
 
 import unittest
 
-from vdt_anonymization.core.roles import classify_person_role, signature_block_start
+from src.core.roles import classify_person_role, signature_block_start
 
 
 class CourtPersonnelHeuristic(unittest.TestCase):

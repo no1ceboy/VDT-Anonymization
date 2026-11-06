@@ -1,7 +1,7 @@
 """Build a self-contained HTML comparison from saved linker evaluation artifacts.
 
 Usage from the repository root:
-python -m src.vdt_anonymization.review.challenge_comparison --run-dir PATH --output PATH
+python -m src.review.challenge_comparison --run-dir PATH --output PATH
 """
 
 from __future__ import annotations

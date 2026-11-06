@@ -6,7 +6,7 @@ from argparse import Namespace
 import json
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from vdt_anonymization.review.manual_linking import (
+from src.review.manual_linking import (
     analyze_map,
     build_queue,
     validate_annotation,

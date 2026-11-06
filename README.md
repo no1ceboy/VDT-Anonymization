@@ -1,464 +1,212 @@
 # Vietnamese court-document anonymization and entity linking
 
-## Company quick start (Windows)
+This run guide assumes you run from the existing checkout at C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization. All command examples use absolute paths rooted there. The handoff ZIP stores the model and experiment assets; the steps below extract only those assets into this checkout.
 
-This section covers the two company workflows: anonymize a DOCX with the local
-API, and reproduce the saved entity-linking experiment. The repository contains
-code and the location vocabulary, but **does not contain model weights or the
-experiment datasets**. Transfer those separately through approved company
-storage. For the complete fresh-data workflow and configuration details, see
-[`docs/COMPANY_HANDOFF.md`](docs/COMPANY_HANDOFF.md).
+## 1. Install and extract the bundled assets
 
-### 1. Clone and install
+The source code is already in C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization. Install the project in a virtual environment, then extract only the model and experiment assets from the handoff ZIP into this checkout.
 
-Use Python 3.11. Install the company-approved PyTorch build for the target
-machine first (CPU or CUDA), then install the project and API dependencies:
-
-```powershell
-git clone https://github.com/no1ceboy/VDT-Anonymization.git
-cd VDT-Anonymization
-py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1
+~~~powershell
+Set-Location -LiteralPath "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization"
+py -3.11 -m venv "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\.venv"
+& "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\.venv\Scripts\Activate.ps1"
 python -m pip install --upgrade pip
-# Install the company-approved PyTorch build here, if it is not already installed.
-python -m pip install -e ".[api]"
-```
-
-### 2. Place the model assets
-
-Transfer the complete local NER model directory, the ELECTRA base encoder, the
-trained linker checkpoint and its sibling tokenizer directory. The OCR model
-is optional. A suggested layout is:
-
-```text
-D:\vdt-deploy\models\
-  ner\
-  electra-base\
-  linker\
-    best_model.pt
-    tokenizer\
-  ocr_char_trigram.json             # optional
-```
-
-### 3. Start the API
-
-In a PowerShell window, set paths, enter the API key from the company secret
-store, and start one API worker:
-
-```powershell
-$env:VDT_NER_MODEL_PATH = "D:\vdt-deploy\models\ner"
-$env:VDT_LINKER_BASE_MODEL = "D:\vdt-deploy\models\electra-base"
-$env:VDT_LINKER_CHECKPOINT = "D:\vdt-deploy\models\linker\best_model.pt"
-$env:VDT_OCR_NGRAM_MODEL = "D:\vdt-deploy\models\ocr_char_trigram.json" # optional
-$env:VDT_API_KEY = Read-Host "API key from company secret store"
-$env:VDT_DEVICE = "auto"           # or cpu / cuda
-$env:VDT_CLUSTER_THRESHOLD = "0.10"
-vdt serve-api --host 127.0.0.1 --port 8000
-```
-
-Keep that window open. In a second PowerShell window, enter the same API key,
-check readiness, and submit a DOCX. The output file is created only for an HTTP
-200 response; HTTP 409 means the document needs review.
-
-```powershell
-$env:VDT_API_KEY = Read-Host "Enter the same API key"
-Invoke-RestMethod http://127.0.0.1:8000/readyz
-
-$inputFile = "D:\input\decision.docx"
-$outputFile = "D:\output\decision_anonymized.docx"
-$tmpFile = "$outputFile.response"
-New-Item -ItemType Directory -Force (Split-Path $outputFile) | Out-Null
-$status = curl.exe -sS -o $tmpFile -w "%{http_code}" `
-  -X POST http://127.0.0.1:8000/v1/anonymize/docx `
-  -H "X-API-Key: $env:VDT_API_KEY" `
-  -F "file=@$inputFile"
-if ($status -eq "200") {
-  Move-Item -LiteralPath $tmpFile -Destination $outputFile -Force
-  "Saved $outputFile"
-} else {
-  Get-Content -LiteralPath $tmpFile -Raw
-  Remove-Item -LiteralPath $tmpFile
-  throw "Request returned HTTP $status; no anonymized DOCX was saved."
-}
-```
-
-### 4. Reproduce the saved linker experiment
-
-Run this on the approved GPU machine. Copy the saved `raw_dataset`,
-`challenge_dataset`, and base encoder to it first; use a new, empty run folder.
-Install the training extra in the activated environment:
-
-```powershell
-python -m pip install -e ".[training]"
-$DATA = "D:\transfer\raw_dataset"
-$CHALLENGE = "D:\transfer\challenge_dataset"
-$BASE = "D:\vdt-deploy\models\electra-base"
-$RUN = "D:\runs\vdt-linker-001"
-
-vdt train-linker `
-  --train-pairs "$CHALLENGE\pairs\train_balanced_independent.jsonl" `
-  --validation-pairs "$DATA\pairs\validation.jsonl" `
-  --test-pairs "$DATA\pairs\test.jsonl" `
-  --output-dir "$RUN\pairwise_model" --model-name "$BASE" `
-  --finetune-mode fft --epochs 3 --batch-size 8 `
-  --gradient-accumulation 2 --max-length 256 --num-workers 0 --seed 42 `
-  --device cuda --fp16 --amp-dtype fp16
-
-vdt eval-linker `
-  --checkpoint "$RUN\pairwise_model\best_model.pt" --model-name "$BASE" `
-  --pairs "$DATA\pairs\test.jsonl" `
-  --collision-pairs "$CHALLENGE\pairs\test_independent_challenge.jsonl" `
-  --output "$RUN\pairwise_model\test_evaluation.json" `
-  --device cuda --amp-dtype fp16
-
-vdt eval-clusters `
-  --checkpoint "$RUN\pairwise_model\best_model.pt" --model-name "$BASE" `
-  --documents "$DATA\documents\test.jsonl" --maps "$DATA\maps\test.jsonl" `
-  --threshold 0.10 --output "$RUN\cluster_test_natural.json" --device cuda
-
-vdt eval-clusters `
-  --checkpoint "$RUN\pairwise_model\best_model.pt" --model-name "$BASE" `
-  --documents "$CHALLENGE\documents\test_independent_challenge.jsonl" `
-  --maps "$CHALLENGE\maps\test_independent_challenge.jsonl" `
-  --threshold 0.10 --output "$RUN\cluster_test_challenge.json" --device cuda
-```
-
-The natural and injected-challenge results are evaluated separately. To build
-a new dataset from source court decisions rather than reproduce this saved
-experiment, follow Sections 6–7 of the handoff guide.
-
-## Company deployment and experiment handoff
-
-For installation on a company machine, the local API, required model assets,
-request examples, and exact natural/challenge evaluation commands, see
-[`docs/COMPANY_HANDOFF.md`](docs/COMPANY_HANDOFF.md).
+python -m pip install -e "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization[local,data,training]"
+~~~
 
-## Install
-
-```powershell
-python -m pip install -e .
-```
-
-Install the local API dependencies with `python -m pip install -e ".[api]"`.
-For court-data preparation and linker experiments, install
-`python -m pip install -e ".[data,training]"`.
+Extract the asset folders from the ZIP without replacing this source checkout:
 
-All workflows are available through `vdt --help`.
+~~~powershell
+@'
+from pathlib import Path
+from zipfile import ZipFile
 
-## Prepare the court-document collection
-
-`vdt prepare-court` downloads only the document Parquet shards from
-`tmquan/congbobanan-toaan-gov-vn`, pins the resolved repository revision, and
-converts them to one UTF-8 JSONL with the existing `case_id` and `markdown`
-fields. All source columns are retained. It requires `pyarrow` and, for online
-downloads, `huggingface_hub`; neither is needed to read the prepared JSONL.
+bundle = Path(r"C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\dist\court-anonymization-handoff-20261028.zip")
+project = Path(r"C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization")
+prefix = "court-anonymization/experiment_assets/"
+with ZipFile(bundle) as archive:
+    for name in archive.namelist():
+        if not name.startswith(prefix) or name.endswith("/"):
+            continue
+        relative = Path(*name[len(prefix):].split("/"))
+        target = project / "experiment_assets" / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not target.exists():
+            target.write_bytes(archive.read(name))
+print("Experiment assets extracted.")
+'@ | py -3.11 -
+~~~
 
-```powershell
-vdt prepare-court --output-dir datasets/court_documents
-```
+For a GPU workstation, install the company-approved PyTorch build in the virtual environment before installing the project extras. Run project commands from C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization.
 
-Set `HF_TOKEN` in the process environment if repository access requires a token.
-Use `--max-shards 1` for a first-shard download, or `--local-parquet PATH` for
-offline conversion of existing shards. Existing prepared outputs are never
-overwritten. Failed conversion leaves a `.partial` file, which is not pipeline
-input. The manifest records source hashes, revision (when known), row counts,
-and skipped empty/duplicate records. No train/test split is inferred.
+Bundled model paths:
 
-```powershell
-vdt run-ner --input-file datasets/court_documents/documents.jsonl --output-file outputs/ner_predictions.jsonl --limit 20 --device auto
-vdt reconstruct --input-file datasets/court_documents/documents.jsonl --ner-file outputs/ner_predictions.jsonl --limit 20
-```
+- NER and linker encoder: C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\models\ner_linker_base
+- Linker checkpoint and tokenizer: C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\models\linker
+- OCR spacing model: C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\models\ocr_char_trigram.json
 
-Use the same `documents.jsonl` as `--source-file` for the HTML inspector.
-`datasets/court_documents_local/`, if present, is an independently prepared
-local-shard subset, not a verified complete/current Hugging Face snapshot.
+NER and the linker use the same NlpHUST model directory. Keep the linker's tokenizer folder beside best_model.pt.
 
-### Optional pre-NER OCR spacing normalization
+## 2. Anonymize a document
 
-The corpus-trained cleaner is an optional view for NER. Train its character
-trigram model on training documents (keep evaluation documents out of this
-corpus), then pass that model to `run-ner`:
+The local script accepts DOCX, UTF-8 TXT, JSON, and JSONL. The input and output extensions must match.
 
-```powershell
-vdt train-ocr-ngram --input-file datasets/court_documents_train.jsonl --text-field markdown --output-file outputs/ocr_char_trigram.json
-vdt run-ner --input-file datasets/court_documents_test.jsonl --output-file outputs/ner_ocr_normalized.jsonl --ocr-ngram-model outputs/ocr_char_trigram.json
-```
+Replace the example input filename with the absolute path to your document. Create the output folder first:
 
-Replace the example paths with your train and evaluation files. Do not train
-the n-gram model on documents used for held-out evaluation.
+~~~powershell
+New-Item -ItemType Directory -Force -Path "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\anonymized" | Out-Null
+~~~
 
-The cleaner canonicalizes unusual Unicode whitespace and repeated horizontal
-spaces. It joins alphabetic fragments only when the joined token appears at
-least three times in the training corpus and the local character-trigram score
-improves by the configured margin (`--ocr-min-ngram-gain`, default `0.18`). It
-does not rewrite the source document. NER output records keep the original
-document length and map mention spans back to the original text; the per-row
-`ocr_normalization` field records changed whitespace and joined source spans.
-The existing post-NER dictionary repair remains useful as a second, entity-aware
-fallback for spacing patterns the pre-NER pass does not change.
+### DOCX
 
-If this view is adopted, rerun NER, rebuild the reconstructed documents and
-replacement maps, rebuild the entity-linking data from those documents, then
-retrain and reevaluate the linker. The pretrained NER checkpoint itself does
-not need training again; it needs inference on the normalized view. Keep the old
-run as the comparison and use the same held-out documents to measure what the
-normalizer changed.
+~~~powershell
+python -m src.local_cli --input "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\input\decision.docx" --output "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\anonymized\decision_anonymized.docx" --ner-model "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\models\ner_linker_base" --linker-base-model "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\models\ner_linker_base" --linker-checkpoint "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\models\linker\best_model.pt" --ocr-ngram-model "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\models\ocr_char_trigram.json" --device auto
+~~~
 
-The pipeline generates synthetic replacements for masked references in published court documents. It does not recover hidden identities. Run `vdt` commands from the repository root after installing the package.
+### TXT
 
-## Design: evidence-v6
+TXT files are read and written as UTF-8.
 
-| Stage | Responsibility | Evidence required |
-|---|---|---|
-| Observe | Preserve NER predictions and find complete candidate tokens, including procedural codes and dotted initials | Original offsets and immutable NER observations |
-| Type | Decide whether an occurrence is a person, organization, address component, or unresolved | A direct syntactic prefix or NER observation; nearby unrelated words cannot change its label |
-| Link | Build identities and attach references | Complete procedural codes, contiguous name prefixes, explicit alias declarations, or audited LLM evidence |
-| Generate | Create a replacement appropriate to the supported identity and encoding | Compatible names, known organization form, address unit and parent scope |
-| Validate | Check spans, apply replacements, and verify exact reversal | Non-overlapping replacements and matching source text |
-| Review | Record unresolved candidates and uncertainty | Document and entity review reasons, not model confidence alone |
+~~~powershell
+python -m src.local_cli --input "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\input\decision.txt" --output "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\anonymized\decision_anonymized.txt" --ner-model "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\models\ner_linker_base" --linker-base-model "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\models\ner_linker_base" --linker-checkpoint "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\models\linker\best_model.pt" --ocr-ngram-model "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\models\ocr_char_trigram.json" --device auto
+~~~
 
-No document-wide marker-label propagation is performed. A typed person M elsewhere cannot classify an unknown occurrence of M. Address groups include the precise unit and parent context; an identical letter in two different address hierarchies does not establish identity.
+### JSON
 
-The package separates these responsibilities:
+JSON can contain a text string, one object, or an array of objects. For objects, the runner detects text, content, or markdown by default. Use --text-field when the document text is in a different field.
 
-- `vdt_anonymization.core`: reconstruction, evidence linking, quality, and offline vocabularies.
-- `vdt_anonymization.pipeline`: NER, reconstruction, and production Kaggle workflows.
-- `vdt_anonymization.data`: preparation, curation, filtering, and challenge builders.
-- `vdt_anonymization.entity_linking`: pair data, baselines, training, and evaluation.
-- `vdt_anonymization.review`: standalone HTML review tools.
+~~~powershell
+python -m src.local_cli --input "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\input\decision.json" --output "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\anonymized\decision_anonymized.json" --text-field "markdown" --ner-model "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\models\ner_linker_base" --linker-base-model "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\models\ner_linker_base" --linker-checkpoint "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\models\linker\best_model.pt" --ocr-ngram-model "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\models\ocr_char_trigram.json" --device auto
+~~~
 
-The former proximity/marker-propagation engine has been removed. NER evidence retains its original label and score in `ner_evidence`; that score is not presented as final linking confidence.
+### JSONL
 
-## Supported conventions and deliberate abstentions
+JSONL processes one document per non-empty line and reuses the loaded models across the batch.
 
-- `NLQ 1` and `NLQ1` are the same code; `NLQ2` is distinct. NLQ does not determine whether the participant is a person or organization.
-- `Nguyễn Văn H12` retains the visible name prefix. A synthetic given name must match its initial.
-- A declared whole-name alias such as `Bị đơn: Ông A` does not constrain the generated name's initial.
-- Dotted initials such as `N.H.H` are atomic. Supported three-part codes receive compatible family/middle/given initials; unsupported forms remain intact.
-- Abbreviations and technical identifiers such as `V/v` and `loại A50` are preserved. Uppercase fragments inside Vietnamese headings are excluded.
-- Address-unit words stay outside replacement spans. Roman numerals, foreign addresses and conflicting explicit parents require review. Missing parents alone do not prevent reconstruction.
+~~~powershell
+python -m src.local_cli --input "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\input\decisions.jsonl" --output "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\anonymized\decisions_anonymized.jsonl" --text-field "markdown" --ner-model "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\models\ner_linker_base" --linker-base-model "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\models\ner_linker_base" --linker-checkpoint "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\models\linker\best_model.pt" --ocr-ngram-model "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\models\ocr_char_trigram.json" --device auto
+~~~
 
-### Offline administrative location vocabulary
+For JSON and JSONL, metadata fields are preserved and only the selected text field is replaced. The default review report is written beside the output with .report.json appended. If a record needs review, the runner withholds the anonymized output and writes the report. Existing files are not overwritten unless --overwrite is supplied.
 
-Reconstruction uses the bundled [dvhcvn vocabulary](src/vdt_anonymization/resources/dvhcvn/SOURCE.md): a pinned **1 March 2025** snapshot with 63 province-level, 696 district-level and 10,047 commune-level records. Source IDs and parent IDs are retained in the packaged `units.tsv`, with upstream attribution and license alongside it. No download is needed at runtime. `vdt import-gazetteer` regenerates these resources from the pinned upstream revision when internet is available.
+## 3. Reproduce the packaged linker experiment
 
-- Administrative replacements use real names of the exact unit (`huyện`, `quận`, `xã`, `phường`, etc.), excluding purely numeric names for alphabetic aliases. Hamlet/street names retain synthetic fallback pools. Alias initials are not enforced for locations.
-- Detection still prioritizes explicit address grammar. The vocabulary recognizes complete adjacent parent names, avoiding truncated names and arbitrary prose. Dictionary-supported spacing repair operates within NER spans, protects anonymization markers and leaves source offsets/text untouched. It is not a standalone full-document location NER replacement.
-- Repeated unit-plus-alias mentions keep the existing document-level linking; explicit conflicting parents trigger review. Masked province/district/commune components are sampled from one valid parent-child path in the bundled gazetteer. Hamlet and street aliases use synthetic fallback pools because the snapshot does not enumerate every local feature. If no valid administrative path exists, `invalid_location_hierarchy` blocks automatic selection. The snapshot is historical, not a current-boundary database.
-- Unsupported foreign name prefixes, fragmented OCR names, possible unmasked aliases, incompatible name pools and conflicting evidence remain unresolved.
-- Procedural organizations need a complete organization form before synthetic replacement. A representative's job title does not establish that form.
-- Existing full names are not copied as recovered identities. Potential links to unmasked names are flagged for review; unchanged source content can still contain real identities.
-- Overlapping plans block all affected entities; the code never silently chooses one edit.
+Use this path to reproduce the experiment represented by the bundled challenge training file and natural validation/test splits. It does not download or reconstruct source decisions.
 
-These are conservative evidence requirements, not a complete implementation of every court convention. Cross-convention links such as NLQ4 to a separate unmasked given name still need review. Geographic names are synthetic vocabulary, not a verified administrative gazetteer.
+The natural dataset has 8,206 document-disjoint items: 6,620 train, 793 validation, and 793 test. The training file contains 33,600 pairs, including the balanced challenge mixture. Separate challenge test pairs and challenge documents are included.
 
-Reference conventions: [Article 7 of NQ 03/2017/NQ-HĐTP](https://thuvienphapluat.vn/van-ban/cong-nghe-thong-tin/nghi-quyet-03-2017-nq-hdtp-cong-bo-ban-an-quyet-dinh-tren-cong-thong-tin-dien-tu-toa-an-343156.aspx) and [section 2 of CV 144/TANDTC-PC](https://congbobanan.toaan.gov.vn/1t2atcvn/thi-hanh-nq-so-03-2017/nq-hdtp).
+Extract the natural split files once:
 
-## Run locally or in a notebook shell cell
+~~~powershell
+Expand-Archive -LiteralPath "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\raw_dataset_bundle.zip" -DestinationPath "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\raw_dataset"
+~~~
 
-Reconstruction and inspection require only Python's standard library. NER requirements are in `requirements.txt`.
+Train a new checkpoint in a new output directory:
 
-```bash
-vdt reconstruct --input-file datasets/legal_test.jsonl --ner-file outputs/nlphust_legal_sample.jsonl --limit 20
-```
+~~~powershell
+python -m src.entity_linking.training --train-pairs "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\challenge_dataset\pairs\train_balanced_independent.jsonl" --validation-pairs "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\raw_dataset\pairs\validation.jsonl" --test-pairs "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\raw_dataset\pairs\test.jsonl" --output-dir "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\reproduction_20261028\pairwise_model" --model-name "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\models\ner_linker_base" --finetune-mode fft --epochs 3 --batch-size 8 --gradient-accumulation 2 --max-length 256 --num-workers 0 --seed 42 --device cuda --fp16 --amp-dtype fp16
+~~~
 
-Optional Gemini: set `GOOGLE_API_KEY` or `GEMINI_API_KEY` in the same terminal that runs Python. Alternatively use `--env-file .env` with a local key file ignored by Git. No Google SDK is required.
+For a CPU-only machine, use --device cpu --no-fp16; full fine-tuning will take substantially longer. This writes a new checkpoint and does not replace the one in the bundle.
 
-```bash
-vdt reconstruct --input-file datasets/legal_test.jsonl --ner-file outputs/nlphust_legal_sample.jsonl --limit 20 --llm-provider gemini --llm-model YOUR_GEMINI_MODEL_ID --llm-max-calls 20
-```
+Evaluate natural pairs and the held-out challenge pairs separately:
 
-Choose a model available to your Google project. Gemini receives selected document excerpts. Its tasks are type conflicts, unknown procedural types, ambiguous references and untyped references to existing person candidates. It chooses supplied IDs, NOT_ENTITY where offered, or ABSTAIN. It cannot invent names or overwrite protected lexical identifiers.
+~~~powershell
+python -m src.entity_linking.evaluate --checkpoint "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\reproduction_20261028\pairwise_model\best_model.pt" --model-name "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\models\ner_linker_base" --pairs "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\raw_dataset\pairs\test.jsonl" --collision-pairs "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\challenge_dataset\pairs\test_independent_challenge.jsonl" --output "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\reproduction_20261028\pairwise_test.json" --device cuda --amp-dtype fp16
+~~~
 
-The model's choice must match an offered candidate and include a reason and an exact quote from supplied text. This checks response validity, not semantic truth. Accepted LLM decisions remain flagged for human review. They are not used as fresh evidence for subsequent model calls.
+Evaluate document clusters on natural test documents:
 
-The budget applies across the run; `--llm-max-calls 0` makes no calls. Timeout/API errors, missing evidence and abstentions are recorded. There are no automatic retries. Requests use Google's [generateContent REST API](https://ai.google.dev/api/generate-content).
+~~~powershell
+python -m src.entity_linking.cluster_evaluate --checkpoint "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\reproduction_20261028\pairwise_model\best_model.pt" --model-name "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\models\ner_linker_base" --documents "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\raw_dataset\documents\test.jsonl" --maps "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\raw_dataset\maps\test.jsonl" --threshold 0.10 --output "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\reproduction_20261028\cluster_test_natural.json" --device cuda
+~~~
 
-## Outputs and review
+Evaluate document clusters on the held-out challenge documents:
 
-The same three reconstruction outputs are written; reruns overwrite these paths:
+~~~powershell
+python -m src.entity_linking.cluster_evaluate --checkpoint "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\reproduction_20261028\pairwise_model\best_model.pt" --model-name "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\models\ner_linker_base" --documents "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\challenge_dataset\documents\test_independent_challenge.jsonl" --maps "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\challenge_dataset\maps\test_independent_challenge.jsonl" --threshold 0.10 --output "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\reproduction_20261028\cluster_test_challenge.json" --device cuda
+~~~
 
-- `outputs/synthetic_unanonymized.jsonl`: source and synthetic text, pipeline version, review status/reasons and statistics.
-- `outputs/entity_links.jsonl`: entities, raw NER observations, rejected candidates, evidence, review reasons and applied replacements.
-- `outputs/replacement_maps.jsonl`: mappings with original text and source/synthetic offsets.
+To evaluate the checkpoint already in the bundle instead of a newly trained one, use C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\models\linker\best_model.pt as the checkpoint path in both evaluation commands.
 
-Override paths using `--output-file`, `--links-file`, and `--maps-file`. Paths must be distinct and cannot overwrite the input. The NER file is preserved. No debug artifact files are generated.
+## 4. Build a new training dataset from source decisions
 
-Documents are `needs_review` when any recorded issue remains (including missing NER); otherwise they are `passed_automatic_checks`. Neither state is a human approval or a guarantee of recall. Round-trip verification establishes reversible edits only. `overlap_conflict_entities` counts entities blocked by conflicting spans.
+Use this longer path only when creating a new experiment. It prepares source decisions, splits by document, learns an OCR spacing cleaner, runs NER, reconstructs pseudonymous training text and entity maps, filters low-quality reconstructions, then extracts mention pairs.
 
-## Large-scale curation and quality filtering
+### 4.1 Prepare and split the documents
 
-The source collection is much larger than a practical first NER run. The
-curation command selects a deterministic, marker-bearing subset while keeping
-legal diversity across `case_type`, `doc_type`, and `cap_xet_xu`:
+The preparation module downloads document Parquet shards from tmquan/congbobanan-toaan-gov-vn. If access requires a Hugging Face token, configure it in the process environment before running. For an existing local shard, add --local-parquet and its absolute path to the preparation command.
 
-```powershell
-vdt curate `
-  --input-file datasets/court_documents_local/documents.jsonl `
-  --output-file datasets/court_documents_curated/documents.jsonl `
-  --per-stratum 100 --min-chars 500
-```
+~~~powershell
+python -m src.data.prepare --output-dir "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\datasets\court_experiment_002\prepared"
+python -m src.data.split_documents --input-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\datasets\court_experiment_002\prepared\documents.jsonl" --output-dir "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\datasets\court_experiment_002\split" --text-field markdown --id-field case_id --validation-ratio 0.1 --test-ratio 0.1 --seed source-split-002
+~~~
 
-The output contains the original text and metadata plus a `curation` audit
-object. Change `--seed` to create a different reproducible sample. The default
-selector requires at least one procedural code, dotted initial, address alias,
-or initial-like marker. Use `--include-no-marker` only when a negative/control
-set is desired.
+The split is 80% train, 10% validation, and 10% test. Split whole documents before fitting the cleaner or running NER.
 
-After NER and reconstruction, score and keep conservative records:
-
-```powershell
-vdt filter `
-  --synthetic-file outputs/synthetic_unanonymized.jsonl `
-  --links-file outputs/entity_links.jsonl `
-  --clean-output outputs/synthetic_unanonymized_clean.jsonl `
-  --report-file outputs/reconstruction_quality.json `
-  --min-score 85 --min-replacements 1
-```
-
-`reconstruction_quality` is a deterministic triage score, not a calibrated
-probability. The default filter requires no review reasons, a successful
-round-trip, and at least one applied replacement. Rejected records are not
-deleted; they remain in the original reconstruction and link-audit files.
-Use `--allow-review` only to create a broader candidate pool for manual review.
-The report includes rejection reasons and selected distributions by case and
-document type, so a high-quality output can still be checked for diversity.
-
-```bash
-vdt review --source-file datasets/legal_test.jsonl --links-file outputs/entity_links.jsonl --synthetic-file outputs/synthetic_unanonymized.jsonl --doc-id 1000001 --output-file outputs/document_review.html
-```
+### 4.2 Train the OCR cleaner and run NER
 
-The viewer shows original and reconstructed text side by side with highlights, document review reasons, and the entity table. Click a mention or table row to highlight the same entity throughout; hover for evidence. LLM decisions are expandable. Mismatched source hashes are rejected. Old outputs remain readable as legacy outputs but need regeneration to show current evidence metadata.
+The OCR cleaner is a character-trigram model, not a neural language model. Fit it on training documents only. It makes a normalized view for NER and maps mention offsets back to the source text.
 
-To inspect a complete demo run, generate a folder containing an index and one page per document:
+~~~powershell
+python -m src.pipeline.train_ocr_ngram --input-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\datasets\court_experiment_002\split\documents\train.jsonl" --text-field markdown --output-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\ocr_char_trigram.json"
 
-```bash
-vdt review-demo \
-  --source-file datasets/demo_court_documents_v2/documents.jsonl \
-  --links-file outputs/demo_100_entity_links.jsonl \
-  --synthetic-file outputs/demo_100_synthetic_unanonymized.jsonl \
-  --output-dir outputs/demo_100_html \
-  --limit 100
-```
+python -m src.pipeline.ner --model-source local --model-path "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\models\ner_linker_base" --input-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\datasets\court_experiment_002\split\documents\train.jsonl" --output-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\ner_train.jsonl" --ocr-ngram-model "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\ocr_char_trigram.json" --text-field markdown --id-field case_id --entity-types PER,LOC,ORG --device auto
 
-Open `outputs/demo_100_html/index.html`. The index can be filtered by document ID, case type, document type, quality tier, or review reason; each page shows the highlighted source, synthetic reconstruction, quality, and entity audit.
+python -m src.pipeline.ner --model-source local --model-path "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\models\ner_linker_base" --input-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\datasets\court_experiment_002\split\documents\validation.jsonl" --output-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\ner_validation.jsonl" --ocr-ngram-model "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\ocr_char_trigram.json" --text-field markdown --id-field case_id --entity-types PER,LOC,ORG --device auto
 
-Keep difficult cases separate from training-clean records:
+python -m src.pipeline.ner --model-source local --model-path "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\models\ner_linker_base" --input-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\datasets\court_experiment_002\split\documents\test.jsonl" --output-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\ner_test.jsonl" --ocr-ngram-model "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\ocr_char_trigram.json" --text-field markdown --id-field case_id --entity-types PER,LOC,ORG --device auto
+~~~
 
-```powershell
-vdt build-challenges `
-  --synthetic-file outputs/demo_100_synthetic_unanonymized.jsonl `
-  --links-file outputs/demo_100_entity_links.jsonl `
-  --output-file outputs/demo_100_synthetic_unanonymized_challenge.jsonl `
-  --report-file outputs/demo_100_challenge_report.json `
-  --max-per-category 5
-```
+### 4.3 Reconstruct and quality-filter
 
-The challenge builder excludes clean records and guarantees coverage of
-available `H1`, `H2`, `B1`, and `B2` marker families before adding representative
-failure reasons. Challenge records are for evaluation and debugging, never for
-the clean training set.
+Reconstruction applies the project marker and document rules to produce synthetic names and locations, entity maps, and an audit file. It does not restore hidden real identities. Filtering removes reconstructions that fail quality checks and keeps maps aligned.
 
-## Verification
+~~~powershell
+python -m src.pipeline.reconstruct --input-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\datasets\court_experiment_002\split\documents\train.jsonl" --ner-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\ner_train.jsonl" --output-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\reconstructed_train.jsonl" --links-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\links_train.jsonl" --maps-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\maps_train.jsonl"
+python -m src.data.filtering --synthetic-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\reconstructed_train.jsonl" --links-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\links_train.jsonl" --maps-input "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\maps_train.jsonl" --clean-output "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\clean_train.jsonl" --maps-output "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\clean_maps_train.jsonl" --report-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\quality_train.json"
 
-```bash
-python -B -m unittest discover -s tests -v
-```
+python -m src.pipeline.reconstruct --input-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\datasets\court_experiment_002\split\documents\validation.jsonl" --ner-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\ner_validation.jsonl" --output-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\reconstructed_validation.jsonl" --links-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\links_validation.jsonl" --maps-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\maps_validation.jsonl"
+python -m src.data.filtering --synthetic-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\reconstructed_validation.jsonl" --links-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\links_validation.jsonl" --maps-input "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\maps_validation.jsonl" --clean-output "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\clean_validation.jsonl" --maps-output "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\clean_maps_validation.jsonl" --report-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\quality_validation.json"
 
-Tests cover known corruption cases, atomic replacements, independent NER evidence, candidate constraints, source integrity and mocked API failures. Live Gemini accuracy requires evaluation on reviewed documents.
-Run commands from the repository root. Existing NER JSONL and notebook commands remain supported.
-The reconstruction and HTML inspector use only Python's standard library. NER dependencies are in `requirements.txt`.
+python -m src.pipeline.reconstruct --input-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\datasets\court_experiment_002\split\documents\test.jsonl" --ner-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\ner_test.jsonl" --output-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\reconstructed_test.jsonl" --links-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\links_test.jsonl" --maps-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\maps_test.jsonl"
+python -m src.data.filtering --synthetic-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\reconstructed_test.jsonl" --links-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\links_test.jsonl" --maps-input "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\maps_test.jsonl" --clean-output "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\clean_test.jsonl" --maps-output "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\clean_maps_test.jsonl" --report-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\quality_test.json"
+~~~
 
-## Production 10k run (Kaggle)
+Join the cleaned documents and maps in the same split order:
 
-`vdt kaggle-10k` streams the Hugging Face `tmquan/cbba-toaan-gov-vn`
-`documents` split, loads NER once, and stops only after selecting exactly 10,000
-records. A clean record must have score 100, no review reason, a verified
-round-trip, and at least one applied reconstruction. LLM decisions are never
-used to auto-accept training records. The v2 selector also deduplicates exact
-source text, rejects future-issued metadata, caps any category at 35%, and caps
-address-primary records at 60%.
+~~~powershell
+Get-Content "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\clean_train.jsonl", "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\clean_validation.jsonl", "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\clean_test.jsonl" | Set-Content -Encoding utf8 "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\clean_all.jsonl"
+Get-Content "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\clean_maps_train.jsonl", "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\clean_maps_validation.jsonl", "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\clean_maps_test.jsonl" | Set-Content -Encoding utf8 "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\clean_maps_all.jsonl"
+~~~
 
-```bash
-vdt kaggle-10k \
-  --output-dir /kaggle/working/vdt_clean_10k \
-  --target 10000 \
-  --device cuda \
-  --dtype fp16
-```
+### 4.4 Extract pairs, train, and evaluate
 
-The runner checkpoints every 100 inferred documents. Reusing the same output
-directory resumes from `progress.json` and appends without duplicating accepted
-document IDs. `clean_10000.jsonl` is the training dataset,
-`clean_10000_maps.jsonl` is its compact audit map, and
-`challenge_rejected.jsonl` is a separate balanced sample of difficult rejects
-for evaluation only. `manifest.json` records selection policy and distributions.
+The pair builder creates positives from mentions with the same reconstructed entity ID and negatives from different IDs. It targets one negative per positive and adds same-surface, different-person collisions to eligible training documents.
 
-## Entity-linking experiment
+~~~powershell
+python -m src.entity_linking.raw_dataset --clean-input "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\clean_all.jsonl" --maps-input "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\clean_maps_all.jsonl" --output-dir "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\linking_dataset" --split-assignments "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\datasets\court_experiment_002\split\split_assignments.jsonl" --negatives-per-positive 1.0 --person-collision-rate 0.30 --collision-eval-rate 1.0 --seed fresh-build-002
 
-The prepared V3 pair splits are in
-`outputs/entity_linking_v3_location_strict_20260924/pairs/`: 221,502 train,
-26,581 validation, and 26,124 test pairs. The separate
-`test_collision_eval.jsonl` has 23 deliberately colliding, different-person
-pairs. Copy these files to the training machine; generated `outputs/` files
-are not stored in Git.
+python -m src.entity_linking.training --train-pairs "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\linking_dataset\pairs\train.jsonl" --validation-pairs "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\linking_dataset\pairs\validation.jsonl" --test-pairs "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\linking_dataset\pairs\test.jsonl" --output-dir "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\trained_model\pairwise_model" --model-name "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\models\ner_linker_base" --finetune-mode fft --epochs 3 --batch-size 8 --gradient-accumulation 2 --max-length 256 --num-workers 0 --seed 42 --device cuda --fp16 --amp-dtype fp16
 
-This is a **pairwise pilot**, not a document-level clustering model. Inputs use
-reconstructed pseudonyms; pair labels come from the rule-based reconstruction
-linker. Metrics therefore measure agreement with weak labels, not independent
-human-ground-truth accuracy. The validation split selects the threshold. The
-evaluator reports test metrics by difficulty, and accepts `--collision-pairs`
-to report the false-link count and rate on the separate collision diagnostic.
-That diagnostic is negative-only, so its F1 is not a useful success measure.
-Use [`TRAIN_ENTITY_LINKER.md`](TRAIN_ENTITY_LINKER.md) for current copy-and-run
-commands. No V3 pair rebuild is needed.
+python -m src.entity_linking.evaluate --checkpoint "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\trained_model\pairwise_model\best_model.pt" --model-name "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\models\ner_linker_base" --pairs "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\linking_dataset\pairs\test.jsonl" --collision-pairs "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\linking_dataset\pairs\test_collision_eval.jsonl" --output "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\trained_model\pairwise_test.json" --device cuda --amp-dtype fp16
 
-## Pipeline
+python -m src.entity_linking.cluster_evaluate --checkpoint "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\trained_model\pairwise_model\best_model.pt" --model-name "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\models\ner_linker_base" --documents "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\linking_dataset\documents\validation.jsonl" --maps "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\linking_dataset\maps\validation.jsonl" --select-threshold --output "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\trained_model\cluster_validation.json" --device cuda
 
-1. Read NER and recover publication markers with document rules.
-2. Identify the encoding: whole-name alias, visible name initial, numbered initial, procedural code, or address/organization component.
-3. Link compatible visible name prefixes, explicit participant declarations and complete procedural codes within each document.
-4. Optionally ask Gemini to classify unknown procedural participants or resolve ambiguous references against supplied candidates.
-5. Generate consistent replacements and verify exact recovery of the source using the replacement map.
+python -m src.entity_linking.cluster_evaluate --checkpoint "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\trained_model\pairwise_model\best_model.pt" --model-name "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\experiment_assets\models\ner_linker_base" --documents "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\linking_dataset\documents\test.jsonl" --maps "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\linking_dataset\maps\test.jsonl" --threshold-file "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\trained_model\cluster_validation.json" --output "C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\outputs\court_experiment_002\trained_model\cluster_test.json" --device cuda
+~~~
 
-`NLQ 1` and `NLQ1` share one code; `NLQ2` is distinct. `NLQ` means a related party, which can be a person or organization. Unknown types remain unchanged until evidence resolves them. `NLC` means witness. `H 12` and `H12` normalize together; document identifiers such as `A01` are excluded from the generic initial rule.
+This fresh-data recipe adds same-surface collision examples; it does not recreate the packaged experiment's balanced four-category challenge mix. Use Section 3 when comparing against that saved challenge setup.
 
-A complete declared alias does not constrain a synthetic given-name initial. A visible name prefix does. Roles provide context; multiple people can share a procedural role, and one person can hold several roles. Distance alone never resolves competing names.
+## 5. How to interpret the stages
 
-The rules follow [Article 7 of NQ 03/2017/NQ-HĐTP](https://thuvienphapluat.vn/van-ban/cong-nghe-thong-tin/nghi-quyet-03-2017-nq-hdtp-cong-bo-ban-an-quyet-dinh-tren-cong-thong-tin-dien-tu-toa-an-343156.aspx) and [section 2 of CV 144/TANDTC-PC](https://congbobanan.toaan.gov.vn/1t2atcvn/thi-hanh-nq-so-03-2017/nq-hdtp). This is synthetic reconstruction, not recovery of hidden identities. Existing unmasked-name evidence handling remains supported; these outputs are not a guarantee that every identity is fictitious. Omitted source details cannot be recovered.
+- Preparation downloads court decisions into JSONL files.
+- OCR cleaning learns spacing patterns from training text and supplies a normalized view to NER.
+- NER records person, location, and organization mentions with offsets mapped to the source text.
+- Reconstruction makes synthetic training text and entity maps from already-anonymized decisions; it does not recover hidden original names.
+- Quality filtering removes reconstructions that fail configured checks.
+- Pair extraction creates same-entity positive pairs and different-entity negative pairs.
+- Training fits the pair scorer. Pair evaluation measures mention links; cluster evaluation measures the final entity groups.
+- The local anonymization command runs detection, linking, and replacement on a new file.
 
-## Run locally or in a notebook shell cell
-
-```bash
-vdt reconstruct --input-file datasets/legal_test.jsonl --ner-file outputs/nlphust_legal_sample.jsonl --limit 20
-```
-
-To use Gemini, set `GOOGLE_API_KEY` or `GEMINI_API_KEY` in the process environment. Alternatively, create a local `.env` containing `GOOGLE_API_KEY=...` and pass `--env-file .env`. These files are ignored by Git. No Google SDK installation is needed.
-
-```bash
-vdt reconstruct --input-file datasets/legal_test.jsonl --ner-file outputs/nlphust_legal_sample.jsonl --limit 20 --llm-provider gemini --llm-model YOUR_GEMINI_MODEL_ID --llm-max-calls 20
-```
-
-Replace the model placeholder with a model available to your Google project. Gemini sends the selected document excerpts to Google's API. The call budget applies across the whole run; `--llm-max-calls 0` makes no requests. Timeouts, failed requests, invalid choices and abstentions leave mentions unresolved and appear in the audit. There are no automatic retries. The implementation uses Google's [generateContent REST API](https://ai.google.dev/api/generate-content).
-
-The resolver requires a valid candidate ID and an exact supporting quote from supplied text. These checks catch malformed responses and invented quotes, but do not prove that the reasoning is correct. Review accepted links before treating them as ground truth. No self-reported confidence score is treated as a calibrated probability.
-
-## Outputs and review
-
-Only three reconstruction outputs are written, using the existing filenames (reruns overwrite them):
-
-- `outputs/synthetic_unanonymized.jsonl`: source, reconstruction and per-document counts.
-- `outputs/entity_links.jsonl`: entities, encoding schemes, procedural roles and per-mention LLM decisions/evidence.
-- `outputs/replacement_maps.jsonl`: entity mappings and applied replacements, including original text and source/synthetic offsets.
-
-Use `--output-file`, `--links-file`, and `--maps-file` to change these paths. The input NER file is preserved. LLM audit data are embedded, with no extra debug output files.
-
-```bash
-vdt review --source-file datasets/legal_test.jsonl --links-file outputs/entity_links.jsonl --doc-id 1003850 --output-file outputs/document_review.html
-```
-
-The inspector shows encoding, role, unresolved status and expandable LLM decisions. Round-trip verification checks replacement integrity, not semantic correctness. `skipped_overlapping_replacements` reports remaining overlap conflicts. Rules are heuristics and cannot certify NER recall or geographic plausibility.
-
-```bash
-python -B -m unittest discover -s tests -v
-```
+The bundle inventory and checksums are documented in C:\Users\Minh\Desktop\PROJECT\VDT-Anonymization\docs\ASSET_BUNDLE.md.

@@ -61,7 +61,9 @@ def load_docx(payload: bytes):
     try:
         from docx import Document
     except ImportError as error:
-        raise RuntimeError("DOCX support requires the API extra: pip install '.[api]'") from error
+        raise RuntimeError(
+            "DOCX support requires python-docx: install '.[local]' or '.[api]'"
+        ) from error
     try:
         return Document(BytesIO(payload))
     except Exception as error:

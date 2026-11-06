@@ -2,12 +2,14 @@
 
 Run from the repository root. Extract the V4 archive to `outputs/entity_linking_v4_location_hierarchy_20261009`.
 
+> Scope warning: V4 uses source text labeled `original_anonymized_markdown` and weak identities from the reconstruction map; it has no human entity-cluster labels. It is a development diagnostic, not a final evaluation of deployment on independently labeled un-anonymized documents.
+
 ## Optional V4 rebuild
 
 Run only if the prepared V4 dataset is unavailable. The output path must not already exist.
 
 ```bash
-python3 -m src.vdt_anonymization.entity_linking.v4_dataset \
+python3 -m src.entity_linking.v4_dataset \
   --v3-dir outputs/entity_linking_v3_location_strict_20260924 \
   --output-dir outputs/entity_linking_v4_location_hierarchy_20261009 \
   --context-chars 160 \
@@ -21,7 +23,7 @@ python3 -m src.vdt_anonymization.entity_linking.v4_dataset \
 ## Smoke test
 
 ```bash
-python3 -m src.vdt_anonymization.entity_linking.training \
+python3 -m src.entity_linking.training \
   --train-pairs outputs/entity_linking_v4_location_hierarchy_20261009/pairs/train.jsonl \
   --validation-pairs outputs/entity_linking_v4_location_hierarchy_20261009/pairs/validation.jsonl \
   --test-pairs outputs/entity_linking_v4_location_hierarchy_20261009/pairs/test.jsonl \
@@ -44,7 +46,7 @@ python3 -m src.vdt_anonymization.entity_linking.training \
 Natural-only frozen baseline:
 
 ```bash
-python3 -m src.vdt_anonymization.entity_linking.training \
+python3 -m src.entity_linking.training \
   --train-pairs outputs/entity_linking_v4_location_hierarchy_20261009/pairs/train_natural.jsonl \
   --validation-pairs outputs/entity_linking_v4_location_hierarchy_20261009/pairs/validation.jsonl \
   --test-pairs outputs/entity_linking_v4_location_hierarchy_20261009/pairs/test.jsonl \
@@ -63,7 +65,7 @@ python3 -m src.vdt_anonymization.entity_linking.training \
 Full V4 frozen baseline:
 
 ```bash
-python3 -m src.vdt_anonymization.entity_linking.training \
+python3 -m src.entity_linking.training \
   --train-pairs outputs/entity_linking_v4_location_hierarchy_20261009/pairs/train.jsonl \
   --validation-pairs outputs/entity_linking_v4_location_hierarchy_20261009/pairs/validation.jsonl \
   --test-pairs outputs/entity_linking_v4_location_hierarchy_20261009/pairs/test.jsonl \
@@ -82,7 +84,7 @@ python3 -m src.vdt_anonymization.entity_linking.training \
 Full V4 LoRA:
 
 ```bash
-python3 -m src.vdt_anonymization.entity_linking.training \
+python3 -m src.entity_linking.training \
   --train-pairs outputs/entity_linking_v4_location_hierarchy_20261009/pairs/train.jsonl \
   --validation-pairs outputs/entity_linking_v4_location_hierarchy_20261009/pairs/validation.jsonl \
   --test-pairs outputs/entity_linking_v4_location_hierarchy_20261009/pairs/test.jsonl \
@@ -105,7 +107,7 @@ python3 -m src.vdt_anonymization.entity_linking.training \
 Full V4 QLoRA; requires PEFT and bitsandbytes already available:
 
 ```bash
-python3 -m src.vdt_anonymization.entity_linking.training \
+python3 -m src.entity_linking.training \
   --train-pairs outputs/entity_linking_v4_location_hierarchy_20261009/pairs/train.jsonl \
   --validation-pairs outputs/entity_linking_v4_location_hierarchy_20261009/pairs/validation.jsonl \
   --test-pairs outputs/entity_linking_v4_location_hierarchy_20261009/pairs/test.jsonl \
@@ -129,7 +131,7 @@ python3 -m src.vdt_anonymization.entity_linking.training \
 Full V4 FFT, primary run:
 
 ```bash
-python3 -m src.vdt_anonymization.entity_linking.training \
+python3 -m src.entity_linking.training \
   --train-pairs outputs/entity_linking_v4_location_hierarchy_20261009/pairs/train.jsonl \
   --validation-pairs outputs/entity_linking_v4_location_hierarchy_20261009/pairs/validation.jsonl \
   --test-pairs outputs/entity_linking_v4_location_hierarchy_20261009/pairs/test.jsonl \
@@ -147,18 +149,21 @@ python3 -m src.vdt_anonymization.entity_linking.training \
 
 ## Baselines and pair evaluation
 
+The V4 baseline is one rule: high-confidence location rules first, then link only when the NER labels and normalized mention text match exactly. Marker baselines are not part of this task or input.
+
 ```bash
-python3 -m src.vdt_anonymization.entity_linking.baseline \
+python3 -m src.entity_linking.baseline \
   --pairs outputs/entity_linking_v4_location_hierarchy_20261009/pairs/test.jsonl \
-  --methods exact_marker marker_family exact_surface \
   --output outputs/entity_linker_v4_ablation_20261009/baseline_test.json
 
-python3 -m src.vdt_anonymization.entity_linking.baseline \
+python3 -m src.entity_linking.baseline \
   --pairs outputs/entity_linking_v4_location_hierarchy_20261009/pairs/test_challenge.jsonl \
-  --methods exact_marker marker_family exact_surface \
   --output outputs/entity_linker_v4_ablation_20261009/baseline_test_challenge.json
 
-python3 -m src.vdt_anonymization.entity_linking.evaluate \
+python3 -m src.review.baseline_cases \
+  --output outputs/entity_linker_v4_ablation_20261009/baseline_cases.html
+
+python3 -m src.entity_linking.evaluate \
   --checkpoint outputs/entity_linker_v4_ablation_20261009/fft_full/best_model.pt \
   --pairs outputs/entity_linking_v4_location_hierarchy_20261009/pairs/test.jsonl \
   --collision-pairs outputs/entity_linking_v4_location_hierarchy_20261009/pairs/test_challenge.jsonl \
@@ -168,7 +173,7 @@ python3 -m src.vdt_anonymization.entity_linking.evaluate \
   --fp16 \
   --amp-dtype bf16
 
-python3 -m src.vdt_anonymization.entity_linking.evaluate \
+python3 -m src.entity_linking.evaluate \
   --checkpoint outputs/entity_linker_v4_ablation_20261009/fft_full/best_model.pt \
   --pairs outputs/entity_linking_v4_location_hierarchy_20261009/pairs/test_location_hard.jsonl \
   --output outputs/entity_linker_v4_ablation_20261009/fft_full/location_hard_evaluation.json \
@@ -177,7 +182,7 @@ python3 -m src.vdt_anonymization.entity_linking.evaluate \
   --fp16 \
   --amp-dtype bf16
 
-python3 -m src.vdt_anonymization.entity_linking.evaluate \
+python3 -m src.entity_linking.evaluate \
   --checkpoint outputs/entity_linker_v4_ablation_20261009/fft_full/best_model.pt \
   --pairs outputs/entity_linking_v4_location_hierarchy_20261009/pairs/test_surface_hard.jsonl \
   --output outputs/entity_linker_v4_ablation_20261009/fft_full/surface_hard_evaluation.json \
@@ -192,7 +197,7 @@ python3 -m src.vdt_anonymization.entity_linking.evaluate \
 Select a threshold using validation documents/maps only:
 
 ```bash
-python3 -m src.vdt_anonymization.entity_linking.cluster_evaluate \
+python3 -m src.entity_linking.cluster_evaluate \
   --checkpoint outputs/entity_linker_v4_ablation_20261009/fft_full/best_model.pt \
   --documents outputs/entity_linking_v4_location_hierarchy_20261009/documents/validation.jsonl \
   --maps outputs/entity_linking_v4_location_hierarchy_20261009/maps/validation.jsonl \
@@ -205,7 +210,7 @@ python3 -m src.vdt_anonymization.entity_linking.cluster_evaluate \
 Evaluate natural test documents/maps:
 
 ```bash
-python3 -m src.vdt_anonymization.entity_linking.cluster_evaluate \
+python3 -m src.entity_linking.cluster_evaluate \
   --checkpoint outputs/entity_linker_v4_ablation_20261009/fft_full/best_model.pt \
   --documents outputs/entity_linking_v4_location_hierarchy_20261009/documents/test.jsonl \
   --maps outputs/entity_linking_v4_location_hierarchy_20261009/maps/test.jsonl \
@@ -218,7 +223,7 @@ python3 -m src.vdt_anonymization.entity_linking.cluster_evaluate \
 Evaluate held-out collision challenge documents/maps:
 
 ```bash
-python3 -m src.vdt_anonymization.entity_linking.cluster_evaluate \
+python3 -m src.entity_linking.cluster_evaluate \
   --checkpoint outputs/entity_linker_v4_ablation_20261009/fft_full/best_model.pt \
   --documents outputs/entity_linking_v4_location_hierarchy_20261009/documents/test_challenge.jsonl \
   --maps outputs/entity_linking_v4_location_hierarchy_20261009/maps/test_challenge.jsonl \
@@ -233,7 +238,7 @@ python3 -m src.vdt_anonymization.entity_linking.cluster_evaluate \
 ```bash
 tensorboard --logdir outputs/entity_linker_v4_ablation_20261009
 
-python3 -m src.vdt_anonymization.entity_linking.inference \
+python3 -m src.entity_linking.inference \
   --checkpoint outputs/entity_linker_v4_ablation_20261009/fft_full/best_model.pt \
   --input ner_documents.jsonl \
   --output linked_documents.jsonl \
